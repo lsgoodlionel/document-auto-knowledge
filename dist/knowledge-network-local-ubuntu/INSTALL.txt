@@ -1,5 +1,5 @@
 knowledge-network-local-ubuntu
 
 这是一个本地离线知识网络工具安装包。
-执行 chmod +x start.sh 后，双击或运行 ./start.sh 即可启动。
-无需联网，无需安装 Python/Node。
+执行 chmod +x start.sh 后运行 ./start.sh，然后打开 http://127.0.0.1:8000。
+需要系统已安装 Python 3。

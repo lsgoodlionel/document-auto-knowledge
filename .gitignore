@@ -1,3 +1,5 @@
-dist/
+
 *.pyc
 __pycache__/
+data/*.sqlite3
+data/*.sqlite3-*

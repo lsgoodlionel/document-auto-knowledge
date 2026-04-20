@@ -6,9 +6,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-WEB_DIR = ROOT / "web"
 DIST_DIR = ROOT / "dist"
 APP_NAME = "knowledge-network-local"
+PACKAGE_PATHS = ["backend", "frontend", "docs", "scripts", "run.py", "README.md"]
 
 
 PLATFORMS = {
@@ -18,18 +18,19 @@ PLATFORMS = {
         "content": """#!/bin/bash
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-open "$SCRIPT_DIR/web/index.html"
+cd "$SCRIPT_DIR"
+python3 run.py
 """,
-        "readme": "双击 start.command 即可启动。",
+        "readme": "双击 start.command 启动服务，然后打开 http://127.0.0.1:8000。",
     },
     "windows": {
         "folder": f"{APP_NAME}-windows",
         "launcher": "start.bat",
         "content": """@echo off
-set SCRIPT_DIR=%~dp0
-start "" "%SCRIPT_DIR%web\\index.html"
+cd /d "%~dp0"
+python run.py
 """,
-        "readme": "双击 start.bat 即可启动。",
+        "readme": "双击 start.bat 启动服务，然后打开 http://127.0.0.1:8000。",
     },
     "ubuntu": {
         "folder": f"{APP_NAME}-ubuntu",
@@ -37,9 +38,10 @@ start "" "%SCRIPT_DIR%web\\index.html"
         "content": """#!/bin/bash
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-xdg-open "$SCRIPT_DIR/web/index.html" >/dev/null 2>&1 &
+cd "$SCRIPT_DIR"
+python3 run.py
 """,
-        "readme": "执行 chmod +x start.sh 后，双击或运行 ./start.sh 即可启动。",
+        "readme": "执行 chmod +x start.sh 后运行 ./start.sh，然后打开 http://127.0.0.1:8000。",
     },
 }
 
@@ -52,8 +54,13 @@ def main() -> None:
     for platform, config in PLATFORMS.items():
         package_dir = DIST_DIR / config["folder"]
         package_dir.mkdir(parents=True)
-        shutil.copytree(WEB_DIR, package_dir / "web")
-        shutil.copy2(ROOT / "README.md", package_dir / "README.md")
+        for item in PACKAGE_PATHS:
+            source = ROOT / item
+            target = package_dir / item
+            if source.is_dir():
+                shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.sqlite3*"))
+            else:
+                shutil.copy2(source, target)
 
         launcher_path = package_dir / config["launcher"]
         launcher_path.write_text(config["content"].replace("\r\n", "\n"), encoding="utf-8")
@@ -68,7 +75,7 @@ def main() -> None:
                     "",
                     "这是一个本地离线知识网络工具安装包。",
                     config["readme"],
-                    "无需联网，无需安装 Python/Node。",
+                    "需要系统已安装 Python 3。",
                 ]
             )
             + "\n",
