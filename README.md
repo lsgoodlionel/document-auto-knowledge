@@ -57,8 +57,11 @@ PORT=8001 python3 run.py
 - `GET /api/projects`
 - `POST /api/projects/import-docx`
 - `GET /api/projects/{id}`
+- `PUT /api/projects/{id}`
+- `DELETE /api/projects/{id}`
 - `POST /api/projects/{id}/nodes`
 - `PUT /api/nodes/{id}`
+- `PUT /api/nodes/{id}/move`
 - `DELETE /api/nodes/{id}`
 - `GET /api/projects/{id}/export`
 

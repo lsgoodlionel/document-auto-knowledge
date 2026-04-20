@@ -68,6 +68,25 @@ def get_project(project_id: int) -> dict[str, Any]:
     return project
 
 
+def rename_project(project_id: int, name: str) -> dict[str, Any]:
+    project_name = sanitize_name(name)
+    with connect() as conn:
+        ensure_project(conn, project_id)
+        conn.execute(
+            "UPDATE projects SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (project_name, project_id),
+        )
+        conn.commit()
+    return get_project(project_id)
+
+
+def delete_project(project_id: int) -> None:
+    with connect() as conn:
+        ensure_project(conn, project_id)
+        conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        conn.commit()
+
+
 def build_node_tree(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_id: dict[int, dict[str, Any]] = {}
     roots: list[dict[str, Any]] = []
@@ -103,6 +122,9 @@ def sort_tree(nodes: list[dict[str, Any]]) -> None:
 
 def create_node(project_id: int, parent_id: int | None, title: str, note: str = "") -> dict[str, Any]:
     with connect() as conn:
+        ensure_project(conn, project_id)
+        if parent_id is not None:
+            ensure_node_in_project(conn, parent_id, project_id)
         position = next_position(conn, project_id, parent_id)
         cursor = conn.execute(
             """
@@ -119,13 +141,14 @@ def create_node(project_id: int, parent_id: int | None, title: str, note: str = 
 
 def update_node(node_id: int, title: str, note: str) -> dict[str, Any]:
     with connect() as conn:
+        node = ensure_node(conn, node_id)
         conn.execute(
             "UPDATE nodes SET title = ?, note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (sanitize_name(title), note, node_id),
         )
         conn.execute(
-            "UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT project_id FROM nodes WHERE id = ?)",
-            (node_id,),
+            "UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (node["project_id"],),
         )
         conn.commit()
     return get_node(node_id)
@@ -133,8 +156,57 @@ def update_node(node_id: int, title: str, note: str) -> dict[str, Any]:
 
 def delete_node(node_id: int) -> None:
     with connect() as conn:
+        node = ensure_node(conn, node_id)
         conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
+        normalize_positions(conn, node["project_id"], node["parent_id"])
+        conn.execute(
+            "UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (node["project_id"],),
+        )
         conn.commit()
+
+
+def move_node(node_id: int, parent_id: int | None, position: int | None) -> dict[str, Any]:
+    with connect() as conn:
+        node = ensure_node(conn, node_id)
+        project_id = int(node["project_id"])
+        old_parent_id = node["parent_id"]
+
+        if parent_id is not None:
+            ensure_node_in_project(conn, parent_id, project_id)
+            if parent_id == node_id or is_descendant(conn, parent_id, node_id):
+                raise ValueError("node cannot be moved under itself or its descendants")
+
+        sibling_count = count_siblings(conn, project_id, parent_id, exclude_node_id=node_id)
+        target_position = clamp_position(position, sibling_count)
+
+        conn.execute("UPDATE nodes SET position = -1 WHERE id = ?", (node_id,))
+        normalize_positions(conn, project_id, old_parent_id)
+        conn.execute(
+            """
+            UPDATE nodes
+            SET position = position + 1
+            WHERE project_id = ?
+              AND ((? IS NULL AND parent_id IS NULL) OR parent_id = ?)
+              AND position >= ?
+              AND id != ?
+            """,
+            (project_id, parent_id, parent_id, target_position, node_id),
+        )
+        conn.execute(
+            """
+            UPDATE nodes
+            SET parent_id = ?, position = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (parent_id, target_position, node_id),
+        )
+        conn.execute(
+            "UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (project_id,),
+        )
+        conn.commit()
+    return get_node(node_id)
 
 
 def get_node(node_id: int) -> dict[str, Any]:
@@ -167,6 +239,100 @@ def next_position(conn: sqlite3.Connection, project_id: int, parent_id: int | No
             (project_id, parent_id),
         ).fetchone()
     return int(row["next_position"])
+
+
+def ensure_project(conn: sqlite3.Connection, project_id: int) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if row is None:
+        raise KeyError("project not found")
+    return row
+
+
+def ensure_node(conn: sqlite3.Connection, node_id: int) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
+    if row is None:
+        raise KeyError("node not found")
+    return row
+
+
+def ensure_node_in_project(conn: sqlite3.Connection, node_id: int, project_id: int) -> sqlite3.Row:
+    row = ensure_node(conn, node_id)
+    if int(row["project_id"]) != project_id:
+        raise ValueError("parent node belongs to another project")
+    return row
+
+
+def is_descendant(conn: sqlite3.Connection, node_id: int, ancestor_id: int) -> bool:
+    current_id: int | None = node_id
+    while current_id is not None:
+        row = conn.execute("SELECT parent_id FROM nodes WHERE id = ?", (current_id,)).fetchone()
+        if row is None:
+            return False
+        current_id = row["parent_id"]
+        if current_id == ancestor_id:
+            return True
+    return False
+
+
+def count_siblings(
+    conn: sqlite3.Connection,
+    project_id: int,
+    parent_id: int | None,
+    exclude_node_id: int | None = None,
+) -> int:
+    if parent_id is None:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM nodes
+            WHERE project_id = ? AND parent_id IS NULL AND (? IS NULL OR id != ?)
+            """,
+            (project_id, exclude_node_id, exclude_node_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM nodes
+            WHERE project_id = ? AND parent_id = ? AND (? IS NULL OR id != ?)
+            """,
+            (project_id, parent_id, exclude_node_id, exclude_node_id),
+        ).fetchone()
+    return int(row["count"])
+
+
+def clamp_position(position: int | None, sibling_count: int) -> int:
+    if position is None:
+        return sibling_count
+    try:
+        parsed = int(position)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("position must be an integer") from exc
+    return max(0, min(parsed, sibling_count))
+
+
+def normalize_positions(conn: sqlite3.Connection, project_id: int, parent_id: int | None) -> None:
+    if parent_id is None:
+        rows = conn.execute(
+            """
+            SELECT id FROM nodes
+            WHERE project_id = ? AND parent_id IS NULL AND position >= 0
+            ORDER BY position, id
+            """,
+            (project_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT id FROM nodes
+            WHERE project_id = ? AND parent_id = ? AND position >= 0
+            ORDER BY position, id
+            """,
+            (project_id, parent_id),
+        ).fetchall()
+
+    for position, row in enumerate(rows):
+        conn.execute("UPDATE nodes SET position = ? WHERE id = ?", (position, row["id"]))
 
 
 def export_project_docx(project_id: int) -> tuple[str, bytes]:
