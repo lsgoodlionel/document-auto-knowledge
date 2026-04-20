@@ -100,6 +100,7 @@ PORT=8001 ./start.sh
 - [docs/CONTINUITY_PROTOCOL.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/CONTINUITY_PROTOCOL.md:1)
 - [docs/PROJECT_STATE.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/PROJECT_STATE.md:1)
 - [docs/V2_PLAN.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/V2_PLAN.md:1)
+- [docs/V2_PARALLEL_TASKS.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/V2_PARALLEL_TASKS.md:1)
 
 ## 并行开发建议
 
@@ -125,4 +126,4 @@ python3 scripts/context_snapshot.py
 
 ## V2.0 开发
 
-V1.0 基本功能已完成。V2.0 新窗口接手时请先阅读 [docs/V2_PLAN.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/V2_PLAN.md:1)，再创建 V2 分支继续。
+V1.0 基本功能已完成。V2.0 新窗口接手时请先阅读 [docs/V2_PLAN.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/V2_PLAN.md:1) 和 [docs/V2_PARALLEL_TASKS.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/V2_PARALLEL_TASKS.md:1)，再创建 V2 分支继续。

@@ -2,6 +2,8 @@
 
 V2.0 目标是在 V1.0 本地知识网络工具基础上，提升产品化、可维护性和复杂知识编辑能力。
 
+V2.0 重大升级的并行拆分见 [docs/V2_PARALLEL_TASKS.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/V2_PARALLEL_TASKS.md:1)。
+
 ## 推荐启动方式
 
 新窗口接手后先创建 V2 分支：
@@ -24,6 +26,13 @@ git branch v2/E-release-desktop
 
 ## V2.0 候选方向
 
+### 0. 多格式导入和节点内容
+
+- 在 `.docx` 基础上增加 PDF、EPUB、AZW3、图片、Excel、FreeMind `.mm`、XMind 导入
+- 目录节点不只保存标题，还要保存对应正文内容
+- 导入结果统一为可编辑的树状知识节点
+- 不支持或依赖缺失的格式必须给出清晰错误提示
+
 ### A. 后端工程化
 
 - 将标准库 HTTP server 迁移到 FastAPI 或 Flask
@@ -34,6 +43,7 @@ git branch v2/E-release-desktop
 
 ### B. 知识网络编辑能力
 
+- 左侧结构树支持同级展开、折叠和指定级别显示
 - 图形节点拖拽布局
 - 跨层级节点关联边
 - 节点标签、颜色、状态
@@ -69,11 +79,11 @@ git branch v2/E-release-desktop
 
 优先做这些低风险高收益任务：
 
-1. 删除或隔离旧版 `web/` 和 `app.py`，减少维护面。
-2. 增加项目级导入/导出备份 JSON。
-3. 编辑器增加节点搜索和折叠。
-4. Word 导出支持模板。
-5. GitHub Release 自动化，把 tag 发布和 artifact 上传串起来。
+1. 先实现统一导入框架和数据模型，避免每种格式各写一套逻辑。
+2. 再并行补 PDF、EPUB、Excel、思维导图等具体格式 importer。
+3. 前端上传页同步增加多格式提示和错误展示。
+4. 编辑器增加左侧目录级别控制和节点正文内容编辑。
+5. 最后做集成测试和导出回写验证。
 
 ## V2.0 接手检查清单
 
