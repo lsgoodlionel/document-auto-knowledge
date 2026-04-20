@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import tempfile
 import threading
 import unittest
@@ -15,6 +16,7 @@ from backend.server import ApiServer, content_disposition
 from backend.services.docx_exporter import build_docx
 from backend.services.docx_parser import DocxFolderParser
 from backend.services import projects
+from backend.services.importers import ImporterError, import_file, registry
 
 
 class BackendApiSmokeTest(unittest.TestCase):
@@ -40,6 +42,8 @@ class BackendApiSmokeTest(unittest.TestCase):
         first = projects.create_node(project_id, None, "First")
         second = projects.create_node(project_id, None, "Second")
         child = projects.create_node(project_id, first["id"], "Child")
+        self.assertEqual(first["sourceType"], "manual")
+        self.assertEqual(first["metadata"], {})
 
         moved = projects.move_node(child["id"], None, 0)
         self.assertIsNone(moved["parentId"])
@@ -61,6 +65,113 @@ class BackendApiSmokeTest(unittest.TestCase):
         projects.delete_project(project_id)
         with self.assertRaises(KeyError):
             projects.get_project(project_id)
+
+    def test_import_docx_uses_registered_importer_and_persists_metadata(self) -> None:
+        payload = base64.b64encode(build_test_docx()).decode("ascii")
+        project = projects.create_project_from_upload("导入测试.docx", payload)
+
+        self.assertEqual(project["name"], "导入测试")
+        self.assertEqual(project["sourceType"], "docx")
+        self.assertIn(".docx", registry.supported_extensions())
+        self.assertEqual([heading["title"] for heading in project["headings"]], ["第一章", "第一节", "大纲标题"])
+
+        tree = project["tree"]
+        self.assertEqual(tree[0]["title"], "第一章")
+        self.assertEqual(tree[0]["note"], "第一章正文第一段\n第一章正文第二段")
+        self.assertEqual(tree[0]["sourceType"], "docx")
+        self.assertEqual(tree[0]["metadata"]["source_parser"], "DocxFolderParser")
+        self.assertEqual(tree[0]["children"][0]["title"], "第一节")
+
+        imported = import_file("again.docx", build_test_docx())
+        self.assertEqual(imported.source_type, "docx")
+        self.assertEqual(imported.tree[0].source_type, "docx")
+
+    def test_pdf_import_builds_tree_from_selectable_text(self) -> None:
+        payload = base64.b64encode(build_test_pdf()).decode("ascii")
+        project = projects.create_project_from_upload("PDF 导入测试.pdf", payload)
+
+        self.assertEqual(project["sourceType"], "pdf")
+        self.assertEqual(project["metadata"]["source_parser"], "PdfParser")
+        self.assertEqual(project["tree"][0]["title"], "1 Project Overview")
+        self.assertEqual(project["tree"][0]["sourceType"], "pdf")
+        self.assertIn("Project body paragraph", project["tree"][0]["note"])
+        self.assertEqual(project["tree"][0]["children"][0]["title"], "1.1 Scope")
+        self.assertEqual(project["headings"][0]["source"], "pdf-text")
+
+    def test_image_import_creates_source_node_with_ocr_warning(self) -> None:
+        payload = base64.b64encode(MINIMAL_PNG).decode("ascii")
+        project = projects.create_project_from_upload("图片导入.png", payload)
+
+        self.assertEqual(project["sourceType"], "image")
+        self.assertEqual(project["tree"][0]["title"], "图片导入")
+        self.assertEqual(project["tree"][0]["sourceType"], "image")
+        self.assertIn("Source image: 图片导入.png", project["tree"][0]["note"])
+        self.assertIn("OCR is not configured", project["tree"][0]["note"])
+        self.assertEqual(project["importWarnings"][0]["code"], "ocr_unavailable")
+
+    def test_import_epub_builds_chapter_tree_and_notes(self) -> None:
+        imported = import_file("电子书样例.epub", build_test_epub())
+
+        self.assertEqual(imported.title, "电子书样例")
+        self.assertEqual(imported.source_type, "epub")
+        self.assertIn(".epub", registry.supported_extensions())
+        self.assertEqual([heading["title"] for heading in imported.headings], ["第一章", "第一节", "第二章"])
+        self.assertEqual(imported.tree[0].title, "第一章")
+        self.assertIn("第一章正文第一段", imported.tree[0].note)
+        self.assertEqual(imported.tree[0].children[0].title, "第一节")
+        self.assertIn("第一节正文", imported.tree[0].children[0].note)
+        self.assertEqual(imported.tree[1].title, "第二章")
+
+        payload = base64.b64encode(build_test_epub()).decode("ascii")
+        project = projects.create_project_from_upload("电子书样例.epub", payload)
+        self.assertEqual(project["sourceType"], "epub")
+        self.assertEqual(project["tree"][0]["sourceType"], "epub")
+        self.assertEqual(project["tree"][0]["metadata"]["source_parser"], "EpubParser")
+        self.assertIn("第一章正文第二段", project["tree"][0]["note"])
+
+    def test_import_azw3_reports_conversion_requirement(self) -> None:
+        with self.assertRaises(ImporterError) as context:
+            import_file("kindle.azw3", b"BOOKMOBI")
+
+        self.assertEqual(context.exception.code, "azw3_conversion_required")
+        self.assertIn("Calibre", context.exception.message)
+
+    def test_csv_import_creates_sheet_rows_and_notes(self) -> None:
+        csv_content = "标题,负责人,状态\n需求梳理,Alice,进行中\n上线验收,Bob,待开始\n".encode("utf-8")
+        payload = base64.b64encode(csv_content).decode("ascii")
+        project = projects.create_project_from_upload("计划.csv", payload)
+
+        self.assertEqual(project["sourceType"], "csv")
+        self.assertEqual(project["metadata"]["rows"], 2)
+        sheet = project["tree"][0]
+        self.assertEqual(sheet["title"], "计划")
+        self.assertEqual([node["title"] for node in sheet["children"]], ["需求梳理", "上线验收"])
+        self.assertEqual(sheet["children"][0]["sourceType"], "csv")
+        self.assertIn("负责人: Alice", sheet["children"][0]["note"])
+        self.assertIn("状态: 进行中", sheet["children"][0]["note"])
+
+    def test_freemind_mm_import_preserves_hierarchy(self) -> None:
+        mm_content = b"""<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.0.1">
+  <node TEXT="Root">
+    <node TEXT="Branch A">
+      <node TEXT="Leaf A1"/>
+    </node>
+    <node TEXT="Branch B">
+      <richcontent TYPE="NOTE"><html><body><p>Branch note</p></body></html></richcontent>
+    </node>
+  </node>
+</map>"""
+        payload = base64.b64encode(mm_content).decode("ascii")
+        project = projects.create_project_from_upload("mind.mm", payload)
+
+        self.assertEqual(project["sourceType"], "freemind")
+        self.assertEqual(project["metadata"]["nodes"], 4)
+        root = project["tree"][0]
+        self.assertEqual(root["title"], "Root")
+        self.assertEqual(root["children"][0]["title"], "Branch A")
+        self.assertEqual(root["children"][0]["children"][0]["title"], "Leaf A1")
+        self.assertEqual(root["children"][1]["note"], "Branch note")
 
     def test_error_payload_shape(self) -> None:
         from backend.server import error_response
@@ -171,6 +282,78 @@ class HttpApiSmokeTest(unittest.TestCase):
         self.assertEqual(status, 404)
         self.assertEqual(payload, {"error": {"code": "not_found", "message": "API not found"}})
 
+    def test_upload_endpoint_dispatches_by_extension(self) -> None:
+        encoded_docx = base64.b64encode(build_test_docx()).decode("ascii")
+        encoded_epub = base64.b64encode(build_test_epub()).decode("ascii")
+
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import",
+            {"filename": "接口导入.docx", "file": encoded_docx},
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["project"]["sourceType"], "docx")
+        self.assertEqual(payload["project"]["tree"][0]["note"], "第一章正文第一段\n第一章正文第二段")
+
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import-docx",
+            {"filename": "兼容导入.docx", "file": encoded_docx},
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["project"]["tree"][0]["sourceType"], "docx")
+
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import",
+            {"filename": "unsupported.pdf", "file": encoded_docx},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "invalid_pdf")
+
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import",
+            {"filename": "接口 PDF.pdf", "file": base64.b64encode(build_test_pdf()).decode("ascii")},
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["project"]["sourceType"], "pdf")
+
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import",
+            {"filename": "接口图片.png", "file": base64.b64encode(MINIMAL_PNG).decode("ascii")},
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["project"]["sourceType"], "image")
+        self.assertEqual(payload["project"]["importWarnings"][0]["code"], "ocr_unavailable")
+
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import",
+            {"filename": "接口电子书.epub", "file": encoded_epub},
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["project"]["sourceType"], "epub")
+        self.assertIn("第一章正文第一段", payload["project"]["tree"][0]["note"])
+
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import",
+            {"filename": "kindle.azw3", "file": base64.b64encode(b"BOOKMOBI").decode("ascii")},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("AZW3 import needs an external conversion tool", payload["error"]["message"])
+
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import",
+            {"filename": "mind.xmind", "file": encoded_docx},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "unsupported_format")
+        self.assertIn("尚未实现 .xmind 完整解析", payload["error"]["message"])
+
 
 class WordImportExportSmokeTest(unittest.TestCase):
     def test_import_notes_and_export_heading_styles(self) -> None:
@@ -255,6 +438,92 @@ def build_test_docx() -> bytes:
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as docx:
         for path, content in files.items():
             docx.writestr(path, content)
+    return buffer.getvalue()
+
+
+def build_test_pdf() -> bytes:
+    stream = (
+        b"BT /F1 12 Tf 72 720 Td "
+        b"(1 Project Overview) Tj T* "
+        b"(Project body paragraph) Tj T* "
+        b"(1.1 Scope) Tj ET"
+    )
+    objects = [
+        b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+        b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n",
+        b"3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n",
+        b"4 0 obj << /Length %d >> stream\n" % len(stream) + stream + b"\nendstream endobj\n",
+        b"5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
+    ]
+    return b"%PDF-1.4\n" + b"".join(objects) + b"%%EOF\n"
+
+
+MINIMAL_PNG = (
+    b"\x89PNG\r\n\x1a\n"
+    b"\x00\x00\x00\rIHDR"
+    b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+    b"\x90wS\xde"
+    b"\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def build_test_epub() -> bytes:
+    files = {
+        "mimetype": "application/epub+zip",
+        "META-INF/container.xml": """<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OPS/package.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>""",
+        "OPS/package.opf": """<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>电子书样例</dc:title>
+  </metadata>
+  <manifest>
+    <item id="toc" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="section1" href="section1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chapter2" href="chapter2.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="toc">
+    <itemref idref="chapter1"/>
+    <itemref idref="section1"/>
+    <itemref idref="chapter2"/>
+  </spine>
+</package>""",
+        "OPS/toc.ncx": """<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <navMap>
+    <navPoint id="chapter1" playOrder="1">
+      <navLabel><text>第一章</text></navLabel>
+      <content src="chapter1.xhtml"/>
+      <navPoint id="section1" playOrder="2">
+        <navLabel><text>第一节</text></navLabel>
+        <content src="section1.xhtml"/>
+      </navPoint>
+    </navPoint>
+    <navPoint id="chapter2" playOrder="3">
+      <navLabel><text>第二章</text></navLabel>
+      <content src="chapter2.xhtml"/>
+    </navPoint>
+  </navMap>
+</ncx>""",
+        "OPS/chapter1.xhtml": """<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>第一章</title></head>
+<body><h1>第一章</h1><p>第一章正文第一段</p><p>第一章正文第二段</p></body></html>""",
+        "OPS/section1.xhtml": """<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>第一节</title></head>
+<body><h2>第一节</h2><p>第一节正文</p></body></html>""",
+        "OPS/chapter2.xhtml": """<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>第二章</title></head>
+<body><h1>第二章</h1><p>第二章正文</p></body></html>""",
+    }
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as epub:
+        for path, content in files.items():
+            epub.writestr(path, content)
     return buffer.getvalue()
 
 

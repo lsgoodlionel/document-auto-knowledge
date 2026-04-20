@@ -1,26 +1,40 @@
 from __future__ import annotations
 
-import base64
+import json
 import sqlite3
 from typing import Any
 
 from ..db import connect, row_to_dict
 from .docx_exporter import build_docx
-from .docx_parser import DocxFolderParser, sanitize_name
+from .docx_parser import sanitize_name
+from .importers import ImportResult, import_uploaded_file
 
 
 def create_project_from_docx(filename: str, file_base64: str) -> dict[str, Any]:
-    content = base64.b64decode(file_base64.encode("utf-8"), validate=True)
-    parsed = DocxFolderParser().parse(content)
-    project_name = sanitize_name(filename.rsplit(".", 1)[0] if filename else "untitled")
+    upload_filename = filename or "untitled.docx"
+    if not upload_filename.lower().endswith(".docx"):
+        upload_filename = f"{upload_filename}.docx"
+    return create_project_from_upload(upload_filename, file_base64)
+
+
+def create_project_from_upload(filename: str, file_base64: str) -> dict[str, Any]:
+    imported = import_uploaded_file(filename, file_base64)
+    return create_project_from_import(imported)
+
+
+def create_project_from_import(imported: ImportResult) -> dict[str, Any]:
+    project_name = sanitize_name(imported.project_name)
 
     with connect() as conn:
         project_id = create_project(conn, project_name)
-        insert_tree(conn, project_id, None, parsed["tree"])
+        insert_tree(conn, project_id, None, imported.tree_as_dicts())
         conn.commit()
 
     project = get_project(project_id)
-    project["headings"] = parsed["headings"]
+    project["headings"] = imported.headings
+    project["sourceType"] = imported.source_type
+    project["metadata"] = imported.metadata
+    project["importWarnings"] = imported.warnings
     return project
 
 
@@ -38,10 +52,18 @@ def insert_tree(
     for position, node in enumerate(nodes):
         cursor = conn.execute(
             """
-            INSERT INTO nodes(project_id, parent_id, title, note, position)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO nodes(project_id, parent_id, title, note, source_type, metadata, position)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (project_id, parent_id, node["name"], node.get("note", ""), position),
+            (
+                project_id,
+                parent_id,
+                sanitize_name(node.get("title") or node.get("name") or "untitled"),
+                node.get("note", ""),
+                node.get("source_type", ""),
+                encode_metadata(node.get("metadata", {})),
+                position,
+            ),
         )
         node_id = int(cursor.lastrowid)
         insert_tree(conn, project_id, node_id, node.get("children", []))
@@ -98,6 +120,8 @@ def build_node_tree(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "title": row["title"],
             "name": row["title"],
             "note": row["note"],
+            "sourceType": row.get("source_type", "") if hasattr(row, "get") else row["source_type"],
+            "metadata": decode_metadata(row.get("metadata", "{}") if hasattr(row, "get") else row["metadata"]),
             "position": row["position"],
             "children": [],
         }
@@ -128,10 +152,10 @@ def create_node(project_id: int, parent_id: int | None, title: str, note: str = 
         position = next_position(conn, project_id, parent_id)
         cursor = conn.execute(
             """
-            INSERT INTO nodes(project_id, parent_id, title, note, position)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO nodes(project_id, parent_id, title, note, source_type, metadata, position)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (project_id, parent_id, sanitize_name(title), note, position),
+            (project_id, parent_id, sanitize_name(title), note, "manual", "{}", position),
         )
         conn.execute("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (project_id,))
         conn.commit()
@@ -222,9 +246,27 @@ def get_node(node_id: int) -> dict[str, Any]:
         "title": data["title"],
         "name": data["title"],
         "note": data["note"],
+        "sourceType": data.get("source_type", ""),
+        "metadata": decode_metadata(data.get("metadata", "{}")),
         "position": data["position"],
         "children": [],
     }
+
+
+def encode_metadata(metadata: Any) -> str:
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return json.dumps(metadata, ensure_ascii=False, sort_keys=True)
+
+
+def decode_metadata(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def next_position(conn: sqlite3.Connection, project_id: int, parent_id: int | None) -> int:
