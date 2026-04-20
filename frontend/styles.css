@@ -255,6 +255,39 @@ button:disabled {
   min-height: 220px;
 }
 
+.outline-toolbar {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.level-control {
+  display: grid;
+  gap: 8px;
+}
+
+.level-control span {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.level-control select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(74, 61, 46, 0.14);
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.78);
+  font: inherit;
+}
+
+.outline-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .empty {
   color: var(--muted);
 }
@@ -273,10 +306,31 @@ button:disabled {
 }
 
 .tree-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  display: block;
   padding: 8px 0;
+}
+
+.outline-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 8px;
+}
+
+.outline-toggle {
+  width: 34px;
+  min-height: 42px;
+  padding: 0;
+  border-radius: 8px;
+  color: var(--accent-dark);
+  background: rgba(191, 90, 54, 0.08);
+  font-weight: 700;
+}
+
+.outline-toggle:disabled {
+  color: var(--muted);
+  background: rgba(74, 61, 46, 0.06);
+  opacity: 1;
 }
 
 .outline-node {
@@ -287,11 +341,19 @@ button:disabled {
   color: var(--text);
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(74, 61, 46, 0.1);
+  overflow-wrap: anywhere;
 }
 
 .outline-node.active {
   color: #fff;
   background: linear-gradient(135deg, var(--accent), #d78452);
+}
+
+.tree-limit-note {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.6;
 }
 
 .folder-icon {
