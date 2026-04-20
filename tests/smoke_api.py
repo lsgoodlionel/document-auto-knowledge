@@ -4,12 +4,16 @@ import json
 import tempfile
 import threading
 import unittest
+import zipfile
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 
 from backend import db
 from backend.server import ApiServer
+from backend.services.docx_exporter import build_docx
+from backend.services.docx_parser import DocxFolderParser
 from backend.services import projects
 
 
@@ -158,6 +162,92 @@ class HttpApiSmokeTest(unittest.TestCase):
         status, payload = self.request("GET", "/api/missing")
         self.assertEqual(status, 404)
         self.assertEqual(payload, {"error": {"code": "not_found", "message": "API not found"}})
+
+
+class WordImportExportSmokeTest(unittest.TestCase):
+    def test_import_notes_and_export_heading_styles(self) -> None:
+        parsed = DocxFolderParser().parse(build_test_docx())
+        tree = parsed["tree"]
+
+        self.assertEqual([heading["title"] for heading in parsed["headings"]], ["第一章", "第一节", "大纲标题"])
+        self.assertEqual(tree[0]["name"], "第一章")
+        self.assertEqual(tree[0]["note"], "第一章正文第一段\n第一章正文第二段")
+        self.assertEqual(tree[0]["children"][0]["name"], "第一节")
+        self.assertEqual(tree[0]["children"][0]["note"], "第一节正文")
+        self.assertEqual(tree[1]["name"], "大纲标题")
+        self.assertEqual(tree[1]["note"], "大纲标题正文")
+
+        export_tree = [
+            {
+                "title": tree[0]["name"],
+                "note": tree[0]["note"],
+                "children": [
+                    {
+                        "title": tree[0]["children"][0]["name"],
+                        "note": tree[0]["children"][0]["note"],
+                        "children": [],
+                    }
+                ],
+            }
+        ]
+        exported = build_docx("导出测试", export_tree)
+        with zipfile.ZipFile(BytesIO(exported)) as docx:
+            document_xml = docx.read("word/document.xml").decode("utf-8")
+            styles_xml = docx.read("word/styles.xml").decode("utf-8")
+
+        self.assertIn("第一章正文第一段", document_xml)
+        self.assertIn('w:pStyle w:val="Heading1"', document_xml)
+        self.assertIn('w:outlineLvl w:val="0"', document_xml)
+        self.assertIn('w:pStyle w:val="Heading2"', document_xml)
+        self.assertIn('w:outlineLvl w:val="1"', document_xml)
+        self.assertIn('w:spacing w:before="240" w:after="120"', document_xml)
+        self.assertIn('w:eastAsia="Microsoft YaHei"', styles_xml)
+        self.assertIn('w:spacing w:after="160" w:line="360"', styles_xml)
+
+        round_trip = DocxFolderParser().parse(exported)["tree"]
+        self.assertEqual(round_trip[0]["name"], "第一章")
+        self.assertEqual(round_trip[0]["note"], "第一章正文第一段\n第一章正文第二段")
+        self.assertEqual(round_trip[0]["children"][0]["name"], "第一节")
+        self.assertEqual(round_trip[0]["children"][0]["note"], "第一节正文")
+
+
+def build_test_docx() -> bytes:
+    files = {
+        "[Content_Types].xml": """<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>""",
+        "_rels/.rels": """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>""",
+        "word/styles.xml": """<?xml version="1.0" encoding="UTF-8"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="cnHeading1"><w:name w:val="标题 1"/></w:style>
+  <w:style w:type="paragraph" w:styleId="cnHeading2"><w:name w:val="标题 2"/></w:style>
+</w:styles>""",
+        "word/document.xml": """<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:pStyle w:val="cnHeading1"/></w:pPr><w:r><w:t>第一章</w:t></w:r></w:p>
+    <w:p><w:r><w:t>第一章正文第一段</w:t></w:r></w:p>
+    <w:p><w:r><w:t>第一章正文第二段</w:t></w:r></w:p>
+    <w:p><w:pPr><w:pStyle w:val="cnHeading2"/></w:pPr><w:r><w:t>第一节</w:t></w:r></w:p>
+    <w:p><w:r><w:t>第一节正文</w:t></w:r></w:p>
+    <w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:t>大纲标题</w:t></w:r></w:p>
+    <w:p><w:r><w:t>大纲标题正文</w:t></w:r></w:p>
+    <w:sectPr/>
+  </w:body>
+</w:document>""",
+    }
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as docx:
+        for path, content in files.items():
+            docx.writestr(path, content)
+    return buffer.getvalue()
 
 
 if __name__ == "__main__":
