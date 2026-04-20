@@ -40,6 +40,12 @@ python3 run.py
 http://127.0.0.1:8000
 ```
 
+如果多个窗口并行开发导致端口冲突，可以指定不同端口：
+
+```bash
+PORT=8001 python3 run.py
+```
+
 也可以使用脚本：
 
 - mac：`scripts/start-mac.command`
