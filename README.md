@@ -99,6 +99,7 @@ PORT=8001 ./start.sh
 - [docs/PARALLEL_TASKS.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/PARALLEL_TASKS.md:1)
 - [docs/CONTINUITY_PROTOCOL.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/CONTINUITY_PROTOCOL.md:1)
 - [docs/PROJECT_STATE.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/PROJECT_STATE.md:1)
+- [docs/V2_PLAN.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/V2_PLAN.md:1)
 
 ## 并行开发建议
 
@@ -121,3 +122,7 @@ python3 scripts/context_snapshot.py
 ```
 
 然后更新 [docs/PROJECT_STATE.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/PROJECT_STATE.md:1)，并按照 [docs/CONTINUITY_PROTOCOL.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/CONTINUITY_PROTOCOL.md:1) 输出交接摘要。
+
+## V2.0 开发
+
+V1.0 基本功能已完成。V2.0 新窗口接手时请先阅读 [docs/V2_PLAN.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/V2_PLAN.md:1)，再创建 V2 分支继续。

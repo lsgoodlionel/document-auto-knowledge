@@ -19,6 +19,7 @@ def main() -> None:
     for path in [
         "README.md",
         "docs/PROJECT_STATE.md",
+        "docs/V2_PLAN.md",
         "docs/PARALLEL_TASKS.md",
         "docs/ARCHITECTURE.md",
         "backend/server.py",
