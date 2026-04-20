@@ -1,3 +1,2 @@
 @echo off
-cd /d "%~dp0"
-python run.py
+call "%~dp0scripts\start-windows.bat"

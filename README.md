@@ -52,6 +52,34 @@ PORT=8001 python3 run.py
 - Ubuntu：`scripts/start-ubuntu.sh`
 - Windows：`scripts/start-windows.bat`
 
+启动脚本会检查 Python 版本、默认端口 `8000` 是否可用，并在启动时显示访问地址。项目需要 Python 3.10 或更高版本。
+
+## 构建安装包
+
+生成 mac / Windows / Ubuntu 三端 zip：
+
+```bash
+python3 build_release.py
+```
+
+产物会输出到 `dist/`：
+
+- `knowledge-network-local-mac.zip`
+- `knowledge-network-local-windows.zip`
+- `knowledge-network-local-ubuntu.zip`
+
+每个安装包都包含 `backend/`、`frontend/`、`docs/`、`scripts/`、`data/`、`run.py` 和 `README.md`。解压后使用根目录的启动文件：
+
+- mac：双击 `start.command`
+- Windows：双击 `start.bat`
+- Ubuntu：运行 `chmod +x start.sh && ./start.sh`
+
+默认访问地址是 `http://127.0.0.1:8000`。如果端口被占用，可以指定其他端口，例如：
+
+```bash
+PORT=8001 ./start.sh
+```
+
 ## API 概览
 
 - `GET /api/projects`

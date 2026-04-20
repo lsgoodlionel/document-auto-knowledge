@@ -40,12 +40,20 @@ def document_xml(tree: list[dict[str, Any]]) -> str:
     for item in flatten_nodes(tree):
         text = escape(item["text"])
         if item["type"] == "heading":
+            outline_level = item["level"] - 1
             paragraphs.append(
-                f'<w:p><w:pPr><w:pStyle w:val="Heading{item["level"]}"/></w:pPr>'
-                f'<w:r><w:t xml:space="preserve">{text}</w:t></w:r></w:p>'
+                f'<w:p><w:pPr><w:pStyle w:val="Heading{item["level"]}"/>'
+                f'<w:outlineLvl w:val="{outline_level}"/>'
+                f'<w:spacing w:before="240" w:after="120"/><w:keepNext/></w:pPr>'
+                f'<w:r><w:rPr><w:rFonts w:ascii="Microsoft YaHei" w:eastAsia="Microsoft YaHei" w:hAnsi="Microsoft YaHei"/>'
+                f'</w:rPr><w:t xml:space="preserve">{text}</w:t></w:r></w:p>'
             )
         else:
-            paragraphs.append(f'<w:p><w:r><w:t xml:space="preserve">{text}</w:t></w:r></w:p>')
+            paragraphs.append(
+                '<w:p><w:pPr><w:spacing w:before="0" w:after="160" w:line="360" w:lineRule="auto"/></w:pPr>'
+                '<w:r><w:rPr><w:rFonts w:ascii="Microsoft YaHei" w:eastAsia="Microsoft YaHei" w:hAnsi="Microsoft YaHei"/>'
+                f'<w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr><w:t xml:space="preserve">{text}</w:t></w:r></w:p>'
+            )
 
     return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -59,14 +67,27 @@ def document_xml(tree: list[dict[str, Any]]) -> str:
 def styles_xml() -> str:
     headings = []
     for level in range(1, 10):
+        size = max(22, 36 - (level - 1) * 2)
+        before = max(120, 360 - (level - 1) * 24)
         headings.append(
             f'<w:style w:type="paragraph" w:styleId="Heading{level}">'
-            f'<w:name w:val="heading {level}"/><w:basedOn w:val="Normal"/><w:qFormat/>'
-            f'<w:pPr><w:outlineLvl w:val="{level - 1}"/></w:pPr></w:style>'
+            f'<w:name w:val="heading {level}"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/>'
+            f'<w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="{before}" w:after="120"/>'
+            f'<w:outlineLvl w:val="{level - 1}"/></w:pPr>'
+            f'<w:rPr><w:rFonts w:ascii="Microsoft YaHei" w:eastAsia="Microsoft YaHei" w:hAnsi="Microsoft YaHei"/>'
+            f'<w:b/><w:bCs/><w:sz w:val="{size}"/><w:szCs w:val="{size}"/></w:rPr></w:style>'
         )
     return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
+  <w:docDefaults>
+    <w:rPrDefault><w:rPr><w:rFonts w:ascii="Microsoft YaHei" w:eastAsia="Microsoft YaHei" w:hAnsi="Microsoft YaHei"/><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr></w:rPrDefault>
+    <w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="360" w:lineRule="auto"/></w:pPr></w:pPrDefault>
+  </w:docDefaults>
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+    <w:name w:val="Normal"/><w:qFormat/>
+    <w:pPr><w:spacing w:after="160" w:line="360" w:lineRule="auto"/></w:pPr>
+    <w:rPr><w:rFonts w:ascii="Microsoft YaHei" w:eastAsia="Microsoft YaHei" w:hAnsi="Microsoft YaHei"/><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr>
+  </w:style>
   {''.join(headings)}
 </w:styles>"""
 

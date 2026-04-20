@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -8,5 +9,5 @@ FRONTEND_DIR = ROOT_DIR / "frontend"
 DATA_DIR = ROOT_DIR / "data"
 DB_PATH = DATA_DIR / "knowledge_network.sqlite3"
 HOST = "127.0.0.1"
-PORT = 8000
+PORT = int(os.environ.get("PORT", "8000"))
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024

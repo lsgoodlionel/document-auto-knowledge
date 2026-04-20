@@ -70,38 +70,39 @@ class DocxFolderParser:
                 except ValueError:
                     pass
 
-            match = re.search(r"Heading(\d+)$", style_id, re.IGNORECASE)
-            if match:
-                mapping[style_id] = int(match.group(1))
-                continue
-
             name = style.find("w:name", NS)
             style_name = name.attrib.get(f"{{{NS['w']}}}val", "") if name is not None else ""
-            match = re.search(r"heading\s*(\d+)", style_name, re.IGNORECASE)
-            if match:
-                mapping[style_id] = int(match.group(1))
+            fallback_level = self._fallback_heading_level(style_id) or self._fallback_heading_level(style_name)
+            if fallback_level is not None:
+                mapping[style_id] = fallback_level
         return mapping
 
     def _extract_headings(self, document_root: ET.Element, style_map: dict[str, int]) -> list[dict[str, Any]]:
         headings: list[dict[str, Any]] = []
+        current_heading: dict[str, Any] | None = None
+        pending_body: list[str] = []
         for para in document_root.findall(".//w:body/w:p", NS):
-            text = "".join(node.text or "" for node in para.findall(".//w:t", NS)).strip()
+            text = self._paragraph_text(para)
             if not text:
                 continue
 
             style_id = self._paragraph_style_id(para)
             level, source = self._resolve_level(para, style_id, style_map)
             if level is None:
+                if current_heading is not None:
+                    pending_body.append(text)
+                    current_heading["note"] = "\n".join(pending_body)
                 continue
 
-            headings.append(
-                {
-                    "title": text,
-                    "folderName": sanitize_name(text),
-                    "level": level,
-                    "source": source,
-                }
-            )
+            pending_body = []
+            current_heading = {
+                "title": text,
+                "folderName": sanitize_name(text),
+                "level": level,
+                "source": source,
+                "note": "",
+            }
+            headings.append(current_heading)
         return headings
 
     def _resolve_level(
@@ -143,15 +144,27 @@ class DocxFolderParser:
     def _fallback_heading_level(style_id: str | None) -> int | None:
         if not style_id:
             return None
-        match = re.search(r"heading\s*(\d+)", style_id, re.IGNORECASE)
+        match = re.search(r"(?:heading|标题)\s*(\d+)", style_id, re.IGNORECASE)
         return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _paragraph_text(para: ET.Element) -> str:
+        parts: list[str] = []
+        for node in para.iter():
+            if node.tag == f"{{{NS['w']}}}t":
+                parts.append(node.text or "")
+            elif node.tag == f"{{{NS['w']}}}tab":
+                parts.append("\t")
+            elif node.tag == f"{{{NS['w']}}}br":
+                parts.append("\n")
+        return "".join(parts).strip()
 
     def _build_tree(self, headings: list[dict[str, Any]]) -> list[FolderNode]:
         root = FolderNode(name="root", level=0)
         stack: list[FolderNode] = [root]
         for heading in headings:
             level = max(1, int(heading["level"]))
-            node = FolderNode(name=heading["folderName"], level=level)
+            node = FolderNode(name=heading["folderName"], level=level, note=heading.get("note", ""))
 
             while stack and stack[-1].level >= level:
                 stack.pop()

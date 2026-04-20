@@ -34,8 +34,11 @@
 - `GET /api/projects`：项目列表
 - `POST /api/projects/import-docx`：上传 Word，解析目录并创建项目
 - `GET /api/projects/{id}`：读取项目和节点树
+- `PUT /api/projects/{id}`：重命名项目
+- `DELETE /api/projects/{id}`：删除项目及其节点
 - `POST /api/projects/{id}/nodes`：新增节点
 - `PUT /api/nodes/{id}`：更新节点标题和文本
+- `PUT /api/nodes/{id}/move`：移动节点到新的父节点并调整同级排序
 - `DELETE /api/nodes/{id}`：删除节点及其子节点
 - `GET /api/projects/{id}/export`：按当前节点树导出新的 Word
 

@@ -18,8 +18,55 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Verify source
+        run: |
+          PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m py_compile run.py backend/server.py backend/db.py backend/config.py backend/services/docx_parser.py backend/services/docx_exporter.py backend/services/projects.py tests/smoke_api.py build_release.py
+          python3 -m unittest tests.smoke_api
+          node --check frontend/app.js
+          node --check frontend/editor.js
+
       - name: Build release zips
         run: python3 build_release.py
+
+      - name: Inspect release zips
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          required = {
+              "backend/",
+              "frontend/",
+              "docs/",
+              "scripts/",
+              "data/",
+              "run.py",
+              "README.md",
+          }
+
+          archives = sorted(Path("dist").glob("*.zip"))
+          if len(archives) != 3:
+              raise SystemExit(f"expected 3 release zips, found {len(archives)}")
+
+          for archive_path in archives:
+              with zipfile.ZipFile(archive_path) as archive:
+                  names = set(archive.namelist())
+              missing = []
+              for item in required:
+                  if item.endswith("/"):
+                      if not any(name.startswith(item) or f"/{item}" in name for name in names):
+                          missing.append(item)
+                  elif not any(name.endswith(f"/{item}") for name in names):
+                      missing.append(item)
+              if missing:
+                  raise SystemExit(f"{archive_path} missing: {', '.join(missing)}")
+              print(f"{archive_path}: ok")
+          PY
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

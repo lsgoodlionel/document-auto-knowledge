@@ -40,19 +40,56 @@ python3 run.py
 http://127.0.0.1:8000
 ```
 
+如果多个窗口并行开发导致端口冲突，可以指定不同端口：
+
+```bash
+PORT=8001 python3 run.py
+```
+
 也可以使用脚本：
 
 - mac：`scripts/start-mac.command`
 - Ubuntu：`scripts/start-ubuntu.sh`
 - Windows：`scripts/start-windows.bat`
 
+启动脚本会检查 Python 版本、默认端口 `8000` 是否可用，并在启动时显示访问地址。项目需要 Python 3.10 或更高版本。
+
+## 构建安装包
+
+生成 mac / Windows / Ubuntu 三端 zip：
+
+```bash
+python3 build_release.py
+```
+
+产物会输出到 `dist/`：
+
+- `knowledge-network-local-mac.zip`
+- `knowledge-network-local-windows.zip`
+- `knowledge-network-local-ubuntu.zip`
+
+每个安装包都包含 `backend/`、`frontend/`、`docs/`、`scripts/`、`data/`、`run.py` 和 `README.md`。解压后使用根目录的启动文件：
+
+- mac：双击 `start.command`
+- Windows：双击 `start.bat`
+- Ubuntu：运行 `chmod +x start.sh && ./start.sh`
+
+默认访问地址是 `http://127.0.0.1:8000`。如果端口被占用，可以指定其他端口，例如：
+
+```bash
+PORT=8001 ./start.sh
+```
+
 ## API 概览
 
 - `GET /api/projects`
 - `POST /api/projects/import-docx`
 - `GET /api/projects/{id}`
+- `PUT /api/projects/{id}`
+- `DELETE /api/projects/{id}`
 - `POST /api/projects/{id}/nodes`
 - `PUT /api/nodes/{id}`
+- `PUT /api/nodes/{id}/move`
 - `DELETE /api/nodes/{id}`
 - `GET /api/projects/{id}/export`
 
@@ -60,6 +97,8 @@ http://127.0.0.1:8000
 
 - [docs/ARCHITECTURE.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/ARCHITECTURE.md:1)
 - [docs/PARALLEL_TASKS.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/PARALLEL_TASKS.md:1)
+- [docs/CONTINUITY_PROTOCOL.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/CONTINUITY_PROTOCOL.md:1)
+- [docs/PROJECT_STATE.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/PROJECT_STATE.md:1)
 
 ## 并行开发建议
 
@@ -72,3 +111,13 @@ http://127.0.0.1:8000
 - 本地部署与安装包
 
 详细拆分见 [docs/PARALLEL_TASKS.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/PARALLEL_TASKS.md:1)。
+
+## 长上下文持续开发
+
+当当前对话窗口 token 使用率接近 90% 时，执行交接流程：
+
+```bash
+python3 scripts/context_snapshot.py
+```
+
+然后更新 [docs/PROJECT_STATE.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/PROJECT_STATE.md:1)，并按照 [docs/CONTINUITY_PROTOCOL.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/CONTINUITY_PROTOCOL.md:1) 输出交接摘要。
