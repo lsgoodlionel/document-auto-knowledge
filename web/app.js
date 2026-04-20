@@ -631,20 +631,25 @@ async function openEditorPage() {
   statusNode.textContent = "正在打开知识网络页面...";
 
   try {
-    const response = await fetch("./editor.html", {
-      cache: "no-store",
-    });
-    if (!response.ok) {
+    const [htmlResponse, scriptResponse] = await Promise.all([
+      fetch("./editor.html", { cache: "no-store" }),
+      fetch("./editor.js", { cache: "no-store" }),
+    ]);
+    if (!htmlResponse.ok || !scriptResponse.ok) {
       throw new Error("编辑器页面加载失败。");
     }
 
-    const html = await response.text();
-    const htmlWithBase = html.replace("<head>", '<head><base href="./">');
+    const html = await htmlResponse.text();
+    const script = await scriptResponse.text();
+    const inlineScript = `<script>${script.replaceAll("</script", "<\\/script")}<\/script>`;
+    const htmlWithBase = html
+      .replace("<head>", '<head><base href="./">')
+      .replace('<script src="./editor.js"></script>', inlineScript);
     document.open();
     document.write(htmlWithBase);
     document.close();
   } catch (error) {
-    window.location.assign("./editor.html");
+    statusNode.textContent = error.message || "编辑器页面加载失败。";
   }
 }
 

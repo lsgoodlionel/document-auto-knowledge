@@ -1,3 +1,4 @@
+(() => {
 const STORAGE_KEY = "knowledge-network-state";
 
 const state = {
@@ -20,8 +21,14 @@ const addSibling = document.querySelector("#add-sibling");
 const deleteNode = document.querySelector("#delete-node");
 const exportDocx = document.querySelector("#export-docx");
 const editorSubtitle = document.querySelector("#editor-subtitle");
+const returnHome = document.querySelector("#return-home");
 
 boot();
+
+returnHome.addEventListener("click", (event) => {
+  event.preventDefault();
+  window.location.assign(window.location.protocol === "file:" ? "./index.html" : "./");
+});
 
 function boot() {
   const raw = sessionStorage.getItem(STORAGE_KEY);
@@ -628,3 +635,4 @@ function crc32(bytes) {
   }
   return (crc ^ 0xffffffff) >>> 0;
 }
+})();
