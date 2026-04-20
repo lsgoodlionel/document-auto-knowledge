@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import base64
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -15,6 +17,7 @@ from backend.server import ApiServer, content_disposition
 from backend.services.docx_exporter import build_docx
 from backend.services.docx_parser import DocxFolderParser
 from backend.services import projects
+from backend.services.importers import import_file, registry
 
 
 class BackendApiSmokeTest(unittest.TestCase):
@@ -40,6 +43,8 @@ class BackendApiSmokeTest(unittest.TestCase):
         first = projects.create_node(project_id, None, "First")
         second = projects.create_node(project_id, None, "Second")
         child = projects.create_node(project_id, first["id"], "Child")
+        self.assertEqual(first["sourceType"], "manual")
+        self.assertEqual(first["metadata"], {})
 
         moved = projects.move_node(child["id"], None, 0)
         self.assertIsNone(moved["parentId"])
@@ -61,6 +66,58 @@ class BackendApiSmokeTest(unittest.TestCase):
         projects.delete_project(project_id)
         with self.assertRaises(KeyError):
             projects.get_project(project_id)
+
+    def test_import_docx_uses_registered_importer_and_persists_metadata(self) -> None:
+        payload = base64.b64encode(build_test_docx()).decode("ascii")
+        project = projects.create_project_from_upload("导入测试.docx", payload)
+
+        self.assertEqual(project["name"], "导入测试")
+        self.assertEqual(project["sourceType"], "docx")
+        self.assertIn(".docx", registry.supported_extensions())
+        self.assertEqual([heading["title"] for heading in project["headings"]], ["第一章", "第一节", "大纲标题"])
+
+        tree = project["tree"]
+        self.assertEqual(tree[0]["title"], "第一章")
+        self.assertEqual(tree[0]["note"], "第一章正文第一段\n第一章正文第二段")
+        self.assertEqual(tree[0]["sourceType"], "docx")
+        self.assertEqual(tree[0]["metadata"]["source_parser"], "DocxFolderParser")
+        self.assertEqual(tree[0]["children"][0]["title"], "第一节")
+
+        imported = import_file("again.docx", build_test_docx())
+        self.assertEqual(imported.source_type, "docx")
+        self.assertEqual(imported.tree[0].source_type, "docx")
+
+    def test_init_db_adds_import_columns_to_existing_nodes_table(self) -> None:
+        legacy_db_path = Path(self.tmpdir.name) / "legacy.sqlite3"
+        with sqlite3.connect(legacy_db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE projects (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE nodes (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  project_id INTEGER NOT NULL,
+                  parent_id INTEGER,
+                  title TEXT NOT NULL,
+                  note TEXT NOT NULL DEFAULT '',
+                  position INTEGER NOT NULL DEFAULT 0,
+                  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+
+        db.init_db(legacy_db_path)
+        with db.connect(legacy_db_path) as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(nodes)").fetchall()}
+
+        self.assertIn("note", columns)
+        self.assertIn("source_type", columns)
+        self.assertIn("metadata", columns)
 
     def test_error_payload_shape(self) -> None:
         from backend.server import error_response
@@ -170,6 +227,34 @@ class HttpApiSmokeTest(unittest.TestCase):
         status, payload = self.request("GET", "/api/missing")
         self.assertEqual(status, 404)
         self.assertEqual(payload, {"error": {"code": "not_found", "message": "API not found"}})
+
+    def test_upload_endpoint_dispatches_by_extension(self) -> None:
+        encoded_docx = base64.b64encode(build_test_docx()).decode("ascii")
+
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import",
+            {"filename": "接口导入.docx", "file": encoded_docx},
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["project"]["sourceType"], "docx")
+        self.assertEqual(payload["project"]["tree"][0]["note"], "第一章正文第一段\n第一章正文第二段")
+
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import-docx",
+            {"filename": "兼容导入.docx", "file": encoded_docx},
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["project"]["tree"][0]["sourceType"], "docx")
+
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import",
+            {"filename": "unsupported.pdf", "file": encoded_docx},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "unsupported_import_type")
 
 
 class WordImportExportSmokeTest(unittest.TestCase):
