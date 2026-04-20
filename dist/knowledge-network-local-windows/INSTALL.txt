@@ -1,0 +1,5 @@
+knowledge-network-local-windows
+
+这是一个本地离线知识网络工具安装包。
+双击 start.bat 即可启动。
+无需联网，无需安装 Python/Node。
