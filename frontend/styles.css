@@ -122,6 +122,35 @@ h1 {
   color: var(--muted);
 }
 
+.format-guide {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.format-guide strong,
+.format-guide span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+}
+
+.format-guide strong {
+  margin-right: 4px;
+  color: var(--accent-dark);
+}
+
+.format-guide span {
+  padding: 0 10px;
+  border: 1px solid rgba(74, 61, 46, 0.1);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.62);
+  font-size: 0.9rem;
+}
+
 .actions,
 .panel-head {
   display: flex;
@@ -176,6 +205,21 @@ button:disabled {
 .status {
   margin: 16px 0 0;
   color: var(--muted);
+}
+
+.status.success {
+  color: #226241;
+}
+
+.status.error {
+  color: #8f2514;
+}
+
+.status-detail {
+  display: block;
+  margin-top: 6px;
+  color: inherit;
+  line-height: 1.6;
 }
 
 .grid {
@@ -277,6 +321,29 @@ button:disabled {
   align-items: center;
   gap: 10px;
   padding: 8px 0;
+}
+
+.tree-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.content-badge {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.content-badge.has-content {
+  color: #226241;
+  background: rgba(60, 136, 92, 0.12);
+}
+
+.content-badge.no-content {
+  color: var(--muted);
+  background: rgba(74, 61, 46, 0.08);
 }
 
 .outline-node {
