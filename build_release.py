@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DIST_DIR = ROOT / "dist"
 APP_NAME = "knowledge-network-local"
-PACKAGE_PATHS = ["backend", "frontend", "docs", "scripts", "data", "run.py", "README.md"]
+PACKAGE_PATHS = ["backend", "frontend", "docs", "scripts", "run.py", "README.md"]
 IGNORED_PATTERNS = ("__pycache__", "*.pyc", "*.sqlite3", "*.sqlite3-*", ".DS_Store")
 
 

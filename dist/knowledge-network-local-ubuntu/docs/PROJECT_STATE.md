@@ -28,7 +28,7 @@
 当前基线提交：
 
 ```text
-b150eaa Improve Word import export fidelity
+aa87424 Update local release packaging
 ```
 
 当前并行分支：
@@ -45,11 +45,12 @@ b150eaa Improve Word import export fidelity
 - `main` 已合并窗口 A 和窗口 B。
 - `main` 已合并窗口 C。
 - `main` 已合并窗口 D。
+- `main` 已合并窗口 E。
 - `窗口A：后端API完整化` 停在自身完成提交 `0b3be3a`。
 - `窗口B：知识网络编辑器接入数据库` 停在自身完成提交 `62891da`。
 - `窗口C：前端项目列表与入口页` 停在自身完成提交 `110c7b7`。
 - `窗口D：Word导入导出质量提升` 停在自身完成提交 `b150eaa`。
-- `窗口E` 已同步到 `b150eaa`，可继续开发。
+- `窗口E：本地部署与安装包` 停在自身完成提交 `aa87424`。
 
 ## 已验证内容
 
@@ -66,15 +67,16 @@ b150eaa Improve Word import export fidelity
 - 窗口 B 编辑器接入数据库基础验证通过
 - 窗口 C 首页项目列表与入口页基础验证通过
 - 窗口 D Word 导入导出往返 smoke test 通过
+- 窗口 E 三端安装包构建与 zip 结构检查通过
 
 ## 当前限制
 
-- 安装包需要跟随新版后端服务启动方式继续打磨。
-- 本地 `main` 比 `origin/main` 超前 8 个提交，需要后续推送。
+- 本地 `main` 比 `origin/main` 超前 10 个提交，需要后续推送。
 
 ## 下一步建议
 
 优先顺序：
 
-1. 窗口 E 更新安装包和 GitHub Actions。
-2. 全量回归测试后推送到 GitHub。
+1. 全量回归测试。
+2. 推送到 GitHub。
+3. 在真实浏览器中做端到端手动验收。
