@@ -28,7 +28,7 @@
 当前基线提交：
 
 ```text
-110c7b7 Add project list entry page
+b150eaa Improve Word import export fidelity
 ```
 
 当前并行分支：
@@ -44,10 +44,12 @@
 
 - `main` 已合并窗口 A 和窗口 B。
 - `main` 已合并窗口 C。
+- `main` 已合并窗口 D。
 - `窗口A：后端API完整化` 停在自身完成提交 `0b3be3a`。
 - `窗口B：知识网络编辑器接入数据库` 停在自身完成提交 `62891da`。
 - `窗口C：前端项目列表与入口页` 停在自身完成提交 `110c7b7`。
-- `窗口D/E` 已同步到 `110c7b7`，可继续开发。
+- `窗口D：Word导入导出质量提升` 停在自身完成提交 `b150eaa`。
+- `窗口E` 已同步到 `b150eaa`，可继续开发。
 
 ## 已验证内容
 
@@ -63,16 +65,16 @@
 - 窗口 A 后端 API smoke test 通过
 - 窗口 B 编辑器接入数据库基础验证通过
 - 窗口 C 首页项目列表与入口页基础验证通过
+- 窗口 D Word 导入导出往返 smoke test 通过
 
 ## 当前限制
 
-- Word 导入暂未把标题下正文完整归入节点 note。
 - 安装包需要跟随新版后端服务启动方式继续打磨。
-- 本地 `main` 比 `origin/main` 超前 6 个提交，需要后续推送。
+- 本地 `main` 比 `origin/main` 超前 8 个提交，需要后续推送。
 
 ## 下一步建议
 
 优先顺序：
 
-1. 窗口 D 提升 Word 正文导入和导出样式。
-2. 窗口 E 更新安装包和 GitHub Actions。
+1. 窗口 E 更新安装包和 GitHub Actions。
+2. 全量回归测试后推送到 GitHub。
