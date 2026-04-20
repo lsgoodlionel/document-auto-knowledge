@@ -35,25 +35,26 @@ docxInput.addEventListener("change", () => {
 parseBtn.addEventListener("click", async () => {
   const file = docxInput.files?.[0];
   if (!file) {
-    statusNode.textContent = "请先选择一个 .docx 文件。";
+    statusNode.textContent = "请先选择一个 .docx、.pdf 或图片文件。";
     return;
   }
 
-  statusNode.textContent = "正在本地解析文档，请稍候...";
+  statusNode.textContent = "正在解析文档，请稍候...";
   parseBtn.disabled = true;
 
   try {
     const data = await parseFile(file);
     state.result = {
       ...data,
-      exportName: file.name.replace(/\.docx$/i, "") || "folder-system",
+      exportName: file.name.replace(/\.[^.]+$/i, "") || "folder-system",
     };
     renderResult(state.result);
+    const warningText = formatImportWarnings(data.warnings);
     if (data.projectId) {
-      statusNode.textContent = `解析完成，已创建新项目。可以直接进入知识网络编辑器。`;
+      statusNode.textContent = `解析完成，已创建新项目。可以直接进入知识网络编辑器。${warningText}`;
       await loadProjects();
     } else {
-      statusNode.textContent = `解析完成，识别到 ${data.headings.length} 个标题。`;
+      statusNode.textContent = `解析完成，识别到 ${data.headings.length} 个标题。${warningText}`;
     }
   } catch (error) {
     statusNode.textContent = error.message || "解析失败，请检查文件格式。";
@@ -67,16 +68,22 @@ async function parseFile(file) {
     try {
       return await parseWithBackend(file);
     } catch (error) {
+      if (!/\.docx$/i.test(file.name)) {
+        throw error;
+      }
       console.warn("Backend import failed, falling back to browser parser:", error);
     }
   }
 
+  if (!/\.docx$/i.test(file.name)) {
+    throw new Error("PDF 和图片导入需要启动本地后端服务。请使用 python3 run.py 后再上传。");
+  }
   return parseDocxFile(file);
 }
 
 async function parseWithBackend(file) {
   const fileBase64 = await readFileAsBase64(file);
-  const response = await fetch("/api/projects/import-docx", {
+  const response = await fetch("/api/projects/import", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -95,10 +102,18 @@ async function parseWithBackend(file) {
   return {
     projectId: data.project.id,
     headings: data.project.headings || [],
+    warnings: data.project.importWarnings || [],
     tree,
     bashScript: buildBashScript(tree),
     powershellScript: buildPowerShellScript(tree),
   };
+}
+
+function formatImportWarnings(warnings) {
+  if (!Array.isArray(warnings) || warnings.length === 0) {
+    return "";
+  }
+  return ` ${warnings.map((warning) => warning.message || warning.code).filter(Boolean).join(" ")}`;
 }
 
 function normalizeBackendTree(nodes) {

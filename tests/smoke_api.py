@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import tempfile
 import threading
@@ -101,6 +102,26 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertIn("filename*=UTF-8''", header)
         self.assertIn("%E5%AF%BC%E5%87%BA%E6%B5%8B%E8%AF%95.docx", header)
 
+    def test_pdf_import_builds_tree_from_selectable_text(self) -> None:
+        payload = base64.b64encode(build_test_pdf()).decode("ascii")
+        project = projects.create_project_from_upload("PDF 导入测试.pdf", payload)
+
+        self.assertEqual(project["name"], "PDF 导入测试")
+        self.assertEqual(project["tree"][0]["title"], "1 Project Overview")
+        self.assertIn("Project body paragraph", project["tree"][0]["note"])
+        self.assertEqual(project["tree"][0]["children"][0]["title"], "1.1 Scope")
+        self.assertEqual(project["headings"][0]["source"], "pdf-text")
+
+    def test_image_import_creates_source_node_with_ocr_warning(self) -> None:
+        payload = base64.b64encode(MINIMAL_PNG).decode("ascii")
+        project = projects.create_project_from_upload("图片导入.png", payload)
+
+        self.assertEqual(project["name"], "图片导入")
+        self.assertEqual(project["tree"][0]["title"], "图片导入")
+        self.assertIn("Source image: 图片导入.png", project["tree"][0]["note"])
+        self.assertIn("OCR is not configured", project["tree"][0]["note"])
+        self.assertEqual(project["importWarnings"][0]["code"], "ocr_unavailable")
+
 
 class HttpApiSmokeTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -170,6 +191,31 @@ class HttpApiSmokeTest(unittest.TestCase):
         status, payload = self.request("GET", "/api/missing")
         self.assertEqual(status, 404)
         self.assertEqual(payload, {"error": {"code": "not_found", "message": "API not found"}})
+
+    def test_upload_endpoint_dispatches_pdf_and_image(self) -> None:
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import",
+            {"filename": "接口 PDF.pdf", "file": base64.b64encode(build_test_pdf()).decode("ascii")},
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["project"]["tree"][0]["title"], "1 Project Overview")
+
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import",
+            {"filename": "接口图片.png", "file": base64.b64encode(MINIMAL_PNG).decode("ascii")},
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["project"]["importWarnings"][0]["code"], "ocr_unavailable")
+
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import",
+            {"filename": "坏文件.pdf", "file": base64.b64encode(build_test_docx()).decode("ascii")},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "invalid_pdf")
 
 
 class WordImportExportSmokeTest(unittest.TestCase):
@@ -256,6 +302,32 @@ def build_test_docx() -> bytes:
         for path, content in files.items():
             docx.writestr(path, content)
     return buffer.getvalue()
+
+
+def build_test_pdf() -> bytes:
+    stream = (
+        b"BT /F1 12 Tf 72 720 Td "
+        b"(1 Project Overview) Tj T* "
+        b"(Project body paragraph) Tj T* "
+        b"(1.1 Scope) Tj ET"
+    )
+    objects = [
+        b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+        b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n",
+        b"3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n",
+        b"4 0 obj << /Length %d >> stream\n" % len(stream) + stream + b"\nendstream endobj\n",
+        b"5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
+    ]
+    return b"%PDF-1.4\n" + b"".join(objects) + b"%%EOF\n"
+
+
+MINIMAL_PNG = (
+    b"\x89PNG\r\n\x1a\n"
+    b"\x00\x00\x00\rIHDR"
+    b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+    b"\x90wS\xde"
+    b"\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 
 if __name__ == "__main__":

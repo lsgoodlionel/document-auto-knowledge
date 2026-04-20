@@ -1,26 +1,30 @@
 from __future__ import annotations
 
-import base64
 import sqlite3
 from typing import Any
 
 from ..db import connect, row_to_dict
 from .docx_exporter import build_docx
-from .docx_parser import DocxFolderParser, sanitize_name
+from .docx_parser import sanitize_name
+from .importers import import_uploaded_file
 
 
 def create_project_from_docx(filename: str, file_base64: str) -> dict[str, Any]:
-    content = base64.b64decode(file_base64.encode("utf-8"), validate=True)
-    parsed = DocxFolderParser().parse(content)
-    project_name = sanitize_name(filename.rsplit(".", 1)[0] if filename else "untitled")
+    return create_project_from_upload(filename, file_base64)
+
+
+def create_project_from_upload(filename: str, file_base64: str) -> dict[str, Any]:
+    imported = import_uploaded_file(filename, file_base64)
 
     with connect() as conn:
-        project_id = create_project(conn, project_name)
-        insert_tree(conn, project_id, None, parsed["tree"])
+        project_id = create_project(conn, imported.project_name)
+        insert_tree(conn, project_id, None, imported.tree)
         conn.commit()
 
     project = get_project(project_id)
-    project["headings"] = parsed["headings"]
+    project["headings"] = imported.headings
+    project["importWarnings"] = imported.warnings
+    project["importMetadata"] = imported.metadata
     return project
 
 
