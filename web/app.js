@@ -144,7 +144,7 @@ openNetwork.addEventListener("click", () => {
     tree: prepareEditorTree(state.result.tree),
   };
   sessionStorage.setItem("knowledge-network-state", JSON.stringify(payload));
-  window.location.href = "./editor.html";
+  openEditorPage();
 });
 
 function renderResult(data) {
@@ -625,6 +625,27 @@ function concatenateUint8Arrays(chunks) {
 
 function prepareEditorTree(tree) {
   return tree.map((node) => cloneNodeForEditor(node));
+}
+
+async function openEditorPage() {
+  statusNode.textContent = "正在打开知识网络页面...";
+
+  try {
+    const response = await fetch("./editor.html", {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error("编辑器页面加载失败。");
+    }
+
+    const html = await response.text();
+    const htmlWithBase = html.replace("<head>", '<head><base href="./">');
+    document.open();
+    document.write(htmlWithBase);
+    document.close();
+  } catch (error) {
+    window.location.assign("./editor.html");
+  }
 }
 
 function cloneNodeForEditor(node) {
