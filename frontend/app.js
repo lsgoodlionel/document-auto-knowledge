@@ -1,5 +1,7 @@
 const state = {
   result: null,
+  projects: [],
+  loadingProjects: false,
 };
 
 const NS = {
@@ -19,6 +21,11 @@ const downloadBash = document.querySelector("#download-bash");
 const downloadPwsh = document.querySelector("#download-pwsh");
 const downloadZip = document.querySelector("#download-zip");
 const openNetwork = document.querySelector("#open-network");
+const projectStatus = document.querySelector("#project-status");
+const projectList = document.querySelector("#project-list");
+const refreshProjects = document.querySelector("#refresh-projects");
+
+boot();
 
 docxInput.addEventListener("change", () => {
   const file = docxInput.files?.[0];
@@ -42,7 +49,12 @@ parseBtn.addEventListener("click", async () => {
       exportName: file.name.replace(/\.docx$/i, "") || "folder-system",
     };
     renderResult(state.result);
-    statusNode.textContent = `解析完成，识别到 ${data.headings.length} 个标题。`;
+    if (data.projectId) {
+      statusNode.textContent = `解析完成，已创建新项目。可以直接进入知识网络编辑器。`;
+      await loadProjects();
+    } else {
+      statusNode.textContent = `解析完成，识别到 ${data.headings.length} 个标题。`;
+    }
   } catch (error) {
     statusNode.textContent = error.message || "解析失败，请检查文件格式。";
   } finally {
@@ -76,7 +88,7 @@ async function parseWithBackend(file) {
   });
   const data = await response.json();
   if (!response.ok) {
-    throw new Error(data.error || "后端解析失败");
+    throw new Error(getApiErrorMessage(data, "后端解析失败"));
   }
 
   const tree = normalizeBackendTree(data.project.tree || []);
@@ -188,6 +200,11 @@ openNetwork.addEventListener("click", () => {
     return;
   }
 
+  if (state.result.projectId) {
+    openProjectEditor(state.result.projectId);
+    return;
+  }
+
   const payload = {
     name: state.result.exportName || "folder-system",
     tree: prepareEditorTree(state.result.tree),
@@ -195,6 +212,129 @@ openNetwork.addEventListener("click", () => {
   sessionStorage.setItem("knowledge-network-state", JSON.stringify(payload));
   openEditorPage();
 });
+
+refreshProjects.addEventListener("click", () => {
+  loadProjects();
+});
+
+function boot() {
+  if (canUseBackend()) {
+    loadProjects();
+    return;
+  }
+
+  projectStatus.textContent = "当前是离线打开页面，历史项目需要通过本地服务访问。";
+  renderProjectList([]);
+}
+
+function canUseBackend() {
+  return window.location.protocol === "http:" || window.location.protocol === "https:";
+}
+
+async function loadProjects() {
+  if (!canUseBackend() || state.loadingProjects) {
+    return;
+  }
+
+  state.loadingProjects = true;
+  refreshProjects.disabled = true;
+  projectStatus.textContent = "正在读取历史项目...";
+  projectList.textContent = "正在加载历史项目。";
+  projectList.classList.add("empty");
+
+  try {
+    const data = await apiRequest("/api/projects");
+    state.projects = data.projects || [];
+    renderProjectList(state.projects);
+  } catch (error) {
+    projectStatus.textContent = error.message || "历史项目加载失败。";
+    projectList.textContent = "没有读到历史项目，请确认本地服务正在运行。";
+    projectList.classList.add("empty");
+  } finally {
+    state.loadingProjects = false;
+    refreshProjects.disabled = false;
+  }
+}
+
+function renderProjectList(projects) {
+  projectList.innerHTML = "";
+
+  if (!projects.length) {
+    projectStatus.textContent = "还没有历史项目。";
+    projectList.textContent = "上传 Word 后，项目会保存在这里，之后可以直接继续编辑。";
+    projectList.classList.add("empty");
+    return;
+  }
+
+  projectStatus.textContent = `共 ${projects.length} 个项目，可以直接继续编辑。`;
+  projectList.classList.remove("empty");
+
+  projects.forEach((project) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "project-card";
+    button.innerHTML = `
+      <span>
+        <strong>${escapeHtml(project.name || "untitled")}</strong>
+        <small>更新于 ${formatDate(project.updated_at || project.created_at)}</small>
+      </span>
+      <span class="project-action">打开</span>
+    `;
+    button.addEventListener("click", () => {
+      openProjectEditor(project.id);
+    });
+    projectList.appendChild(button);
+  });
+}
+
+function openProjectEditor(projectId) {
+  sessionStorage.setItem(
+    "knowledge-network-state",
+    JSON.stringify({
+      projectId,
+    }),
+  );
+  window.location.assign(`./editor.html?projectId=${encodeURIComponent(projectId)}`);
+}
+
+async function apiRequest(path, options = {}) {
+  const response = await fetch(path, {
+    method: options.method || "GET",
+    headers: options.body ? { "Content-Type": "application/json" } : {},
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const contentType = response.headers.get("Content-Type") || "";
+  const data = contentType.includes("application/json") ? await response.json() : {};
+
+  if (!response.ok) {
+    throw new Error(getApiErrorMessage(data, "请求失败。"));
+  }
+
+  return data;
+}
+
+function getApiErrorMessage(data, fallback) {
+  return data.error?.message || data.error || fallback;
+}
+
+function formatDate(value) {
+  if (!value) {
+    return "未知时间";
+  }
+
+  const normalized = String(value).includes("T") ? value : String(value).replace(" ", "T");
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 function renderResult(data) {
   renderTree(data.tree || []);
@@ -210,6 +350,7 @@ function renderResult(data) {
   downloadPwsh.disabled = !data.powershellScript;
   downloadZip.disabled = !data.tree?.length;
   openNetwork.disabled = !data.tree?.length;
+  openNetwork.textContent = data.projectId ? "进入知识网络" : "打开知识网络";
 }
 
 function renderTree(tree) {
