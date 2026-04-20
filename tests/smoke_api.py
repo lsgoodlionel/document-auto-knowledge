@@ -11,7 +11,7 @@ from io import BytesIO
 from pathlib import Path
 
 from backend import db
-from backend.server import ApiServer
+from backend.server import ApiServer, content_disposition
 from backend.services.docx_exporter import build_docx
 from backend.services.docx_parser import DocxFolderParser
 from backend.services import projects
@@ -92,6 +92,14 @@ class BackendApiSmokeTest(unittest.TestCase):
             json.loads(handler.body.decode("utf-8")),
             {"error": {"code": "bad_request", "message": "Bad request"}},
         )
+
+    def test_content_disposition_supports_chinese_filename(self) -> None:
+        header = content_disposition("导出测试.docx")
+
+        header.encode("latin-1")
+        self.assertIn('filename="download.docx"', header)
+        self.assertIn("filename*=UTF-8''", header)
+        self.assertIn("%E5%AF%BC%E5%87%BA%E6%B5%8B%E8%AF%95.docx", header)
 
 
 class HttpApiSmokeTest(unittest.TestCase):

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from .config import FRONTEND_DIR, HOST, MAX_UPLOAD_SIZE, PORT
 from .db import init_db
@@ -48,9 +49,28 @@ def binary_response(handler: BaseHTTPRequestHandler, status: int, content_type: 
     handler.send_response(status)
     handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(data)))
-    handler.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+    handler.send_header("Content-Disposition", content_disposition(filename))
     handler.end_headers()
     handler.wfile.write(data)
+
+
+def content_disposition(filename: str) -> str:
+    fallback = ascii_filename_fallback(filename)
+    encoded = quote(filename, safe="")
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
+
+
+def ascii_filename_fallback(filename: str) -> str:
+    fallback = filename.encode("ascii", "ignore").decode("ascii")
+    fallback = re.sub(r'[\r\n"\\;]', "_", fallback)
+    fallback = re.sub(r"\s+", " ", fallback).strip()
+    if not fallback or fallback.startswith("."):
+        fallback = "download.docx" if filename.lower().endswith(".docx") else "download"
+    if "." not in fallback and "." in filename:
+        extension = filename.rsplit(".", 1)[-1].encode("ascii", "ignore").decode("ascii")
+        if extension:
+            fallback = f"{fallback}.{extension}"
+    return fallback
 
 
 class ApiServer(BaseHTTPRequestHandler):
