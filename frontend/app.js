@@ -93,16 +93,33 @@ async function parseFile(file) {
 
 async function parseWithBackend(file) {
   const fileBase64 = await readFileAsBase64(file);
-  const response = await fetch("/api/projects/import", {
+  const response = await requestImportEndpoint("/api/projects/import", file.name, fileBase64);
+  if (response.status === 404 && isDocxFile(file.name)) {
+    return parseBackendResponse(await requestImportEndpoint("/api/projects/import-docx", file.name, fileBase64), file);
+  }
+  if (response.status === 404) {
+    throw new ImportUiError("当前本地服务还没有启用统一导入入口，暂时不能导入该格式。", {
+      code: "import_endpoint_missing",
+      detail: "请合并 V2 导入框架后再导入非 Word 格式。",
+    });
+  }
+  return parseBackendResponse(response, file);
+}
+
+async function requestImportEndpoint(path, filename, fileBase64) {
+  return fetch(path, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      filename: file.name,
+      filename,
       file: fileBase64,
     }),
   });
+}
+
+async function parseBackendResponse(response, file) {
   const contentType = response.headers.get("Content-Type") || "";
   const data = contentType.includes("application/json") ? await response.json() : {};
   if (!response.ok) {

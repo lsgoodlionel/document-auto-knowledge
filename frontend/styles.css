@@ -376,7 +376,6 @@ button:disabled {
   background: rgba(74, 61, 46, 0.06);
   opacity: 1;
 }
-
 .tree-title {
   min-width: 0;
   overflow-wrap: anywhere;
