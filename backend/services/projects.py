@@ -371,3 +371,8 @@ def normalize_positions(conn: sqlite3.Connection, project_id: int, parent_id: in
 
     for position, row in enumerate(rows):
         conn.execute("UPDATE nodes SET position = ? WHERE id = ?", (position, row["id"]))
+
+
+def export_project_docx(project_id: int) -> tuple[str, bytes]:
+    project = get_project(project_id)
+    return f"{sanitize_name(project['name'])}.docx", build_docx(project["name"], project["tree"])
