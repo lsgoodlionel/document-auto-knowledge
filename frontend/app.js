@@ -4,6 +4,8 @@ const state = {
   loadingProjects: false,
 };
 
+const SUPPORTED_EXTENSIONS = [".docx", ".pdf", ".epub", ".azw3", ".png", ".jpg", ".jpeg", ".xlsx", ".xls", ".csv", ".mm", ".xmind"];
+
 const NS = {
   w: "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
 };
@@ -29,76 +31,118 @@ boot();
 
 docxInput.addEventListener("change", () => {
   const file = docxInput.files?.[0];
-  statusNode.textContent = file ? `已选择：${file.name}` : "等待上传文档。";
+  renderStatus(file ? `已选择：${file.name}` : "等待上传文档。");
 });
 
 parseBtn.addEventListener("click", async () => {
   const file = docxInput.files?.[0];
   if (!file) {
-    statusNode.textContent = "请先选择一个 .docx 文件。";
+    renderStatus("请先选择一个支持的文档文件。", "error");
     return;
   }
 
-  statusNode.textContent = "正在本地解析文档，请稍候...";
+  if (!isSupportedUpload(file.name)) {
+    renderStatus(`暂不支持 ${getFileExtension(file.name) || "该"} 格式。请上传：${SUPPORTED_EXTENSIONS.join("、")}`, "error");
+    return;
+  }
+
+  renderStatus("正在导入文档，请稍候...");
   parseBtn.disabled = true;
 
   try {
     const data = await parseFile(file);
     state.result = {
       ...data,
-      exportName: file.name.replace(/\.docx$/i, "") || "folder-system",
+      exportName: stripKnownExtension(file.name) || "folder-system",
     };
     renderResult(state.result);
+    const warningText = formatImportWarnings(data.warnings);
     if (data.projectId) {
-      statusNode.textContent = `解析完成，已创建新项目。可以直接进入知识网络编辑器。`;
+      renderStatus(`导入成功，已创建新项目。可以直接进入知识网络编辑器。${warningText}`, "success");
       await loadProjects();
     } else {
-      statusNode.textContent = `解析完成，识别到 ${data.headings.length} 个标题。`;
+      renderStatus(`解析完成，识别到 ${data.headings.length} 个标题。${warningText}`, "success");
     }
   } catch (error) {
-    statusNode.textContent = error.message || "解析失败，请检查文件格式。";
+    renderImportError(error);
   } finally {
     parseBtn.disabled = false;
   }
 });
 
 async function parseFile(file) {
-  if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+  if (canUseBackend()) {
     try {
       return await parseWithBackend(file);
     } catch (error) {
+      if (!isDocxFile(file.name)) {
+        throw error;
+      }
       console.warn("Backend import failed, falling back to browser parser:", error);
     }
   }
 
+  if (!isDocxFile(file.name)) {
+    throw new ImportUiError("离线打开页面时只能解析 .docx。请通过本地服务打开页面后再导入其他格式。", {
+      code: "backend_required",
+      detail: "运行 python3 run.py 后访问 http://127.0.0.1:8000。",
+    });
+  }
   return parseDocxFile(file);
 }
 
 async function parseWithBackend(file) {
   const fileBase64 = await readFileAsBase64(file);
-  const response = await fetch("/api/projects/import-docx", {
+  const response = await requestImportEndpoint("/api/projects/import", file.name, fileBase64);
+  if (response.status === 404 && isDocxFile(file.name)) {
+    return parseBackendResponse(await requestImportEndpoint("/api/projects/import-docx", file.name, fileBase64), file);
+  }
+  if (response.status === 404) {
+    throw new ImportUiError("当前本地服务还没有启用统一导入入口，暂时不能导入该格式。", {
+      code: "import_endpoint_missing",
+      detail: "请合并 V2 导入框架后再导入非 Word 格式。",
+    });
+  }
+  return parseBackendResponse(response, file);
+}
+
+async function requestImportEndpoint(path, filename, fileBase64) {
+  return fetch(path, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      filename: file.name,
+      filename,
       file: fileBase64,
     }),
   });
-  const data = await response.json();
+}
+
+async function parseBackendResponse(response, file) {
+  const contentType = response.headers.get("Content-Type") || "";
+  const data = contentType.includes("application/json") ? await response.json() : {};
   if (!response.ok) {
-    throw new Error(getApiErrorMessage(data, "后端解析失败"));
+    throw createApiError(data, "后端解析失败");
   }
 
   const tree = normalizeBackendTree(data.project.tree || []);
   return {
     projectId: data.project.id,
     headings: data.project.headings || [],
+    warnings: data.project.importWarnings || [],
+    sourceType: data.project.sourceType || getFileExtension(file.name).replace(".", ""),
     tree,
     bashScript: buildBashScript(tree),
     powershellScript: buildPowerShellScript(tree),
   };
+}
+
+function formatImportWarnings(warnings) {
+  if (!Array.isArray(warnings) || warnings.length === 0) {
+    return "";
+  }
+  return ` ${warnings.map((warning) => warning.message || warning.code).filter(Boolean).join(" ")}`;
 }
 
 function normalizeBackendTree(nodes) {
@@ -107,6 +151,8 @@ function normalizeBackendTree(nodes) {
     name: node.name || node.title,
     title: node.title || node.name,
     note: node.note || "",
+    sourceType: node.sourceType || node.source_type || "",
+    metadata: node.metadata || {},
     children: normalizeBackendTree(node.children || []),
   }));
 }
@@ -128,8 +174,9 @@ sampleBtn.addEventListener("click", () => {
       {
         name: "01 项目总览",
         level: 1,
+        note: "项目背景、目标和范围说明。",
         children: [
-          { name: "项目背景", level: 2, children: [] },
+          { name: "项目背景", level: 2, note: "说明项目缘起和现状。", children: [] },
           { name: "参与角色", level: 2, children: [] },
         ],
       },
@@ -141,9 +188,10 @@ sampleBtn.addEventListener("click", () => {
           {
             name: "功能清单",
             level: 2,
+            note: "按前后端拆分核心能力。",
             children: [
               { name: "前端", level: 3, children: [] },
-              { name: "后端", level: 3, children: [] },
+              { name: "后端", level: 3, note: "提供导入、保存和导出接口。", children: [] },
             ],
           },
         ],
@@ -163,7 +211,7 @@ sampleBtn.addEventListener("click", () => {
     exportName: "word-folder-system-demo",
   };
   renderResult(state.result);
-  statusNode.textContent = "已载入演示数据。";
+  renderStatus("已载入演示数据。", "success");
 });
 
 downloadBash.addEventListener("click", () => {
@@ -180,23 +228,23 @@ downloadPwsh.addEventListener("click", () => {
 
 downloadZip.addEventListener("click", () => {
   if (!state.result?.tree?.length) {
-    statusNode.textContent = "当前没有可导出的目录结构。";
+    renderStatus("当前没有可导出的目录结构。", "error");
     return;
   }
 
   try {
-    statusNode.textContent = "正在生成 zip 压缩包...";
+    renderStatus("正在生成 zip 压缩包...");
     const zipBytes = buildDirectoryZip(state.result.tree);
     downloadBlob(`${state.result.exportName || "folder-system"}.zip`, new Blob([zipBytes], { type: "application/zip" }));
-    statusNode.textContent = "zip 压缩包已生成并开始下载。";
+    renderStatus("zip 压缩包已生成并开始下载。", "success");
   } catch (error) {
-    statusNode.textContent = error.message || "zip 生成失败。";
+    renderStatus(error.message || "zip 生成失败。", "error");
   }
 });
 
 openNetwork.addEventListener("click", () => {
   if (!state.result?.tree?.length) {
-    statusNode.textContent = "请先生成目录结构，再打开知识网络。";
+    renderStatus("请先生成目录结构，再打开知识网络。", "error");
     return;
   }
 
@@ -261,7 +309,7 @@ function renderProjectList(projects) {
 
   if (!projects.length) {
     projectStatus.textContent = "还没有历史项目。";
-    projectList.textContent = "上传 Word 后，项目会保存在这里，之后可以直接继续编辑。";
+    projectList.textContent = "上传文档后，项目会保存在这里，之后可以直接继续编辑。";
     projectList.classList.add("empty");
     return;
   }
@@ -313,8 +361,82 @@ async function apiRequest(path, options = {}) {
   return data;
 }
 
+class ImportUiError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = "ImportUiError";
+    this.code = details.code || "";
+    this.detail = details.detail || "";
+  }
+}
+
+function createApiError(data, fallback) {
+  const error = data.error || {};
+  if (typeof error === "string") {
+    return new ImportUiError(error || fallback);
+  }
+
+  return new ImportUiError(error.message || fallback, {
+    code: error.code || data.code || "",
+    detail: error.detail || data.detail || "",
+  });
+}
+
 function getApiErrorMessage(data, fallback) {
   return data.error?.message || data.error || fallback;
+}
+
+function renderStatus(message, tone = "neutral") {
+  statusNode.classList.remove("success", "error");
+  if (tone !== "neutral") {
+    statusNode.classList.add(tone);
+  }
+  statusNode.textContent = message;
+}
+
+function renderImportError(error) {
+  statusNode.classList.remove("success");
+  statusNode.classList.add("error");
+  statusNode.innerHTML = "";
+
+  const message = document.createElement("span");
+  message.textContent = error.message || "导入失败，请检查文件格式。";
+  statusNode.appendChild(message);
+
+  if (error.code || error.detail) {
+    const meta = document.createElement("small");
+    meta.className = "status-detail";
+    meta.textContent = [error.code ? `错误码：${error.code}` : "", error.detail].filter(Boolean).join("。");
+    statusNode.appendChild(meta);
+  }
+}
+
+function formatImportWarnings(warnings) {
+  if (!Array.isArray(warnings) || warnings.length === 0) {
+    return "";
+  }
+  return ` ${warnings.map((warning) => (typeof warning === "string" ? warning : warning.message || warning.code)).filter(Boolean).join(" ")}`;
+}
+
+function getFileExtension(filename) {
+  const match = String(filename || "").toLowerCase().match(/\.[^.]+$/);
+  return match ? match[0] : "";
+}
+
+function isSupportedUpload(filename) {
+  return SUPPORTED_EXTENSIONS.includes(getFileExtension(filename));
+}
+
+function isDocxFile(filename) {
+  return getFileExtension(filename) === ".docx";
+}
+
+function stripKnownExtension(filename) {
+  const extension = getFileExtension(filename);
+  if (SUPPORTED_EXTENSIONS.includes(extension)) {
+    return filename.slice(0, -extension.length);
+  }
+  return filename;
 }
 
 function formatDate(value) {
@@ -373,7 +495,12 @@ function createTreeList(nodes) {
     const item = document.createElement("li");
     const content = document.createElement("div");
     content.className = "tree-item";
-    content.innerHTML = `<span class="folder-icon">📁</span><span>${escapeHtml(node.name)}</span>`;
+    const hasBody = hasNodeBody(node);
+    content.innerHTML = `
+      <span class="folder-icon">📁</span>
+      <span class="tree-title">${escapeHtml(node.name)}</span>
+      <span class="content-badge ${hasBody ? "has-content" : "no-content"}">${hasBody ? "有正文" : "无正文"}</span>
+    `;
     item.appendChild(content);
 
     if (node.children?.length) {
@@ -384,6 +511,10 @@ function createTreeList(nodes) {
   });
 
   return list;
+}
+
+function hasNodeBody(node) {
+  return Boolean(String(node.note || "").trim());
 }
 
 function renderHeadings(headings) {

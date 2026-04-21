@@ -10,7 +10,9 @@ from urllib.parse import quote, urlparse
 
 from .config import FRONTEND_DIR, HOST, MAX_UPLOAD_SIZE, PORT
 from .db import init_db
+from .services.importers import ImporterError
 from .services import projects
+from .services.importers import ImporterError
 
 
 class ApiError(Exception):
@@ -36,6 +38,8 @@ def error_response(handler: BaseHTTPRequestHandler, status: int, code: str, mess
 
 def handle_api_error(handler: BaseHTTPRequestHandler, exc: Exception) -> None:
     if isinstance(exc, ApiError):
+        error_response(handler, exc.status, exc.code, exc.message)
+    elif isinstance(exc, ImporterError):
         error_response(handler, exc.status, exc.code, exc.message)
     elif isinstance(exc, KeyError):
         error_response(handler, HTTPStatus.NOT_FOUND, "not_found", str(exc).strip("'"))
@@ -92,8 +96,11 @@ class ApiServer(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path == "/api/projects/import":
+            self._handle_import()
+            return
         if path == "/api/projects/import-docx":
-            self._handle_import_docx()
+            self._handle_import()
             return
         if path.startswith("/api/projects/") and path.endswith("/nodes"):
             self._handle_create_node(path)
@@ -137,10 +144,10 @@ class ApiServer(BaseHTTPRequestHandler):
             raise ValueError("request too large")
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
-    def _handle_import_docx(self) -> None:
+    def _handle_import(self) -> None:
         try:
             payload = self._read_json()
-            project = projects.create_project_from_docx(payload.get("filename", ""), payload.get("file", ""))
+            project = projects.create_project_from_upload(payload.get("filename", ""), payload.get("file", ""))
         except Exception as exc:
             handle_api_error(self, exc)
             return
