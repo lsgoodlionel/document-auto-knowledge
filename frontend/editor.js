@@ -16,6 +16,7 @@ const networkCanvas = document.querySelector("#network-canvas");
 const networkMeta = document.querySelector("#network-meta");
 const focusLabel = document.querySelector("#focus-label");
 const selectionPath = document.querySelector("#selection-path");
+const selectionSummary = document.querySelector("#selection-summary");
 const nodeTitle = document.querySelector("#node-title");
 const nodeNote = document.querySelector("#node-note");
 const saveNode = document.querySelector("#save-node");
@@ -224,6 +225,7 @@ exportDocx.addEventListener("click", () => {
 });
 
 function render() {
+  ensureSelectedNode();
   renderOutline();
   renderInspector();
   renderNetwork();
@@ -240,6 +242,8 @@ function renderEmptyState(message = "当前没有可编辑的知识网络，请�
   nodeCount.textContent = "0 个节点";
   focusLabel.textContent = "未选择节点";
   selectionPath.textContent = "暂无路径";
+  selectionSummary.textContent = "当前未选择节点。";
+  selectionSummary.classList.add("empty");
   toggleEditor(false);
 }
 
@@ -277,9 +281,9 @@ function createOutlineList(nodes) {
     button.type = "button";
     button.className = `outline-node ${node.id === state.selectedId ? "active" : ""}`;
     button.textContent = node.name;
+    button.setAttribute("aria-current", node.id === state.selectedId ? "true" : "false");
     button.addEventListener("click", () => {
-      state.selectedId = node.id;
-      render();
+      selectNode(node.id);
     });
     item.appendChild(button);
 
@@ -294,26 +298,26 @@ function createOutlineList(nodes) {
 }
 
 function renderInspector() {
-  const selected = findNode(state.selectedId);
+  const selected = getSelectedNode();
   if (!selected) {
     nodeTitle.value = "";
     nodeNote.value = "";
-    focusLabel.textContent = "未选择节点";
-    selectionPath.textContent = "暂无路径";
+    renderSelectedNodeDetails(null);
     return;
   }
 
   nodeTitle.value = selected.name;
   nodeNote.value = selected.note || "";
-  focusLabel.textContent = selected.name;
-  selectionPath.textContent = buildPath(selected.id).join(" / ");
+  renderSelectedNodeDetails(selected);
 }
 
 function renderNetwork() {
-  const selected = findNode(state.selectedId);
+  const selected = getSelectedNode();
   if (!selected) {
     networkCanvas.textContent = "请先从左侧目录中选择一个节点。";
     networkCanvas.classList.add("empty");
+    networkMeta.textContent = "当前会显示所选节点的上级与下级关系。";
+    networkMeta.classList.add("empty");
     return;
   }
 
@@ -356,15 +360,59 @@ function createGraphNode(node, type) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = `graph-node ${type}`;
+  button.setAttribute("aria-pressed", node.id === state.selectedId ? "true" : "false");
   button.innerHTML = `
     <strong>${escapeHtml(node.name)}</strong>
     <span>${node.children.length} 个下级</span>
   `;
   button.addEventListener("click", () => {
-    state.selectedId = node.id;
-    render();
+    selectNode(node.id);
   });
   return button;
+}
+
+// Smoke note:
+// Outline clicks and graph clicks must both flow through this single selection path,
+// so the inspector, badges, and relation view always point at the same node.
+function selectNode(nodeId) {
+  if (!nodeId) {
+    return;
+  }
+  if (!findNode(nodeId)) {
+    return;
+  }
+  state.selectedId = nodeId;
+  render();
+}
+
+function getSelectedNode() {
+  ensureSelectedNode();
+  return findNode(state.selectedId);
+}
+
+function ensureSelectedNode() {
+  if (state.selectedId && findNode(state.selectedId)) {
+    return;
+  }
+  state.selectedId = state.tree[0]?.id || null;
+}
+
+function renderSelectedNodeDetails(selected) {
+  if (!selected) {
+    focusLabel.textContent = "未选择节点";
+    selectionPath.textContent = "暂无路径";
+    selectionSummary.textContent = "当前未选择节点。";
+    selectionSummary.classList.add("empty");
+    return;
+  }
+
+  const path = buildPath(selected.id).join(" / ");
+  const parent = getAncestors(selected.id).at(-1);
+  const childCount = selected.children.length;
+  focusLabel.textContent = selected.name;
+  selectionPath.textContent = path;
+  selectionSummary.textContent = `当前节点：${selected.name}；上级：${parent?.name || "无"}；下级：${childCount} 个。`;
+  selectionSummary.classList.remove("empty");
 }
 
 function normalizeTree(nodes) {
@@ -510,7 +558,8 @@ async function loadProject(preferredSelectedId = state.selectedId) {
   const project = data.project;
   state.name = project.name || "folder-system";
   state.tree = normalizeTree(project.tree || []);
-  state.selectedId = findNode(preferredSelectedId)?.id || state.tree[0]?.id || null;
+  state.selectedId = preferredSelectedId;
+  ensureSelectedNode();
   editorSubtitle.textContent = `正在编辑：${state.name}`;
   render();
 }

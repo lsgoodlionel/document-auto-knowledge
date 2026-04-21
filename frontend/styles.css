@@ -463,6 +463,20 @@ button:disabled {
   line-height: 1.7;
 }
 
+.selection-summary {
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid rgba(74, 61, 46, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 252, 248, 0.9);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.selection-summary.empty {
+  color: var(--muted);
+}
+
 .form-stack {
   display: grid;
   gap: 18px;
