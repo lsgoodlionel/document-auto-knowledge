@@ -35,7 +35,8 @@ class ImageParser:
         else:
             extracted = self.ocr_provider.extract_text(content, filename)
             if extracted.strip():
-                note_lines.extend(["OCR text:", extracted.strip()])
+                note_lines.append("OCR text:")
+                note_lines.append(extracted.strip())
 
         return {
             "headings": [

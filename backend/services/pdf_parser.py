@@ -27,7 +27,8 @@ class PdfParser:
         if not content.startswith(b"%PDF-"):
             raise PdfParserError("invalid_pdf", "PDF import failed: the file does not look like a PDF document.")
 
-        lines = normalize_lines(self.extract_text(content))
+        text = self.extract_text(content)
+        lines = normalize_lines(text)
         if not lines:
             raise PdfParserError(
                 "pdf_text_not_found",
@@ -35,6 +36,11 @@ class PdfParser:
             )
 
         headings = build_headings(lines)
+        tree = build_tree(headings)
+        if not tree:
+            first = sanitize_name(lines[0][:80]) or "PDF 文本"
+            tree = [{"name": first, "level": 1, "note": "\n".join(lines[1:]), "children": []}]
+
         return {
             "headings": [
                 {
@@ -46,7 +52,7 @@ class PdfParser:
                 }
                 for heading in headings
             ],
-            "tree": build_tree(headings),
+            "tree": tree,
             "warnings": [],
             "pages": max(1, content.count(b"/Type /Page")),
         }
@@ -63,9 +69,11 @@ class PdfParser:
 def stream_variants(raw: bytes) -> list[bytes]:
     variants = [raw]
     try:
-        variants.append(zlib.decompress(raw))
+        inflated = zlib.decompress(raw)
     except zlib.error:
-        pass
+        inflated = None
+    if inflated is not None:
+        variants.append(inflated)
     return variants
 
 
@@ -80,7 +88,8 @@ def extract_text_strings(data: bytes) -> list[str]:
             found.append(joined)
 
     for match in re.finditer(r"\((?:\\.|[^\\()])*\)\s*Tj", text):
-        decoded = decode_pdf_string(match.group(0).rsplit(")", 1)[0][1:])
+        value = match.group(0).rsplit(")", 1)[0][1:]
+        decoded = decode_pdf_string(value)
         if decoded:
             found.append(decoded)
 
@@ -101,7 +110,9 @@ def decode_pdf_string(value: str) -> str:
         if i >= len(value):
             break
         escaped = value[i]
-        if escaped in "nr":
+        if escaped == "n":
+            output.append("\n")
+        elif escaped == "r":
             output.append("\n")
         elif escaped == "t":
             output.append("\t")
@@ -128,7 +139,12 @@ def decode_pdf_string(value: str) -> str:
 
 
 def normalize_lines(text: str) -> list[str]:
-    return [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if line:
+            lines.append(line)
+    return lines
 
 
 def build_headings(lines: list[str]) -> list[PdfHeading]:
@@ -140,10 +156,11 @@ def build_headings(lines: list[str]) -> list[PdfHeading]:
             if current is not None:
                 current.note_lines.append(line)
             continue
+
         current = PdfHeading(title=line, level=level)
         headings.append(current)
 
-    if not headings:
+    if not headings and lines:
         headings.append(PdfHeading(title=lines[0], level=1, note_lines=lines[1:]))
     return headings
 

@@ -23,7 +23,7 @@ def create_project_from_upload(filename: str, file_base64: str) -> dict[str, Any
 
 
 def create_project_from_import(imported: ImportResult) -> dict[str, Any]:
-    project_name = sanitize_name(imported.title)
+    project_name = sanitize_name(imported.project_name)
 
     with connect() as conn:
         project_id = create_project(conn, project_name)
