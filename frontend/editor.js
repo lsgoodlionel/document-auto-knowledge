@@ -623,7 +623,6 @@ async function loadProject(preferredSelectedId = state.selectedId) {
   state.selectedId = preferredSelectedId;
   ensureSelectedNode();
   await loadAvailableProjects();
-  await loadAvailableProjects();
   editorSubtitle.textContent = `正在编辑：${state.name}`;
   render();
 }
