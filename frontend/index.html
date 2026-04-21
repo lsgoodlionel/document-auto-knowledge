@@ -3,25 +3,40 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Word 文档目录生成器</title>
+    <title>文档知识目录生成器</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <main class="shell">
       <section class="hero">
-        <p class="eyebrow">DOCUMENT TO KNOWLEDGE NETWORK</p>
-        <h1>把文档结构变成可编辑的知识网络</h1>
+        <p class="eyebrow">DOCUMENT TO KNOWLEDGE TREE</p>
+        <h1>把文档结构变成可编辑的知识目录</h1>
         <p class="intro">
-          上传 `.docx`、`.pdf` 或图片后，网页会尽量识别标题层级；图片会先作为带来源信息的节点进入项目，等待 OCR 插件接入。
+          上传文档后，网页会按标题、章节、表格或来源线索生成目录树，适合课程资料、项目归档、招投标文档和知识库初始化。
         </p>
       </section>
 
       <section class="panel uploader">
         <label class="dropzone" for="docx-input">
-          <input id="docx-input" type="file" accept=".docx,.pdf,.png,.jpg,.jpeg" />
-          <span class="drop-title">选择 `.docx`、`.pdf` 或图片</span>
-          <span class="drop-hint">Word 使用标题样式；PDF 使用文本标题线索；图片保存为来源节点并提示 OCR 状态</span>
+          <input id="docx-input" type="file" accept=".docx,.pdf,.epub,.azw3,.png,.jpg,.jpeg,.xlsx,.xls,.csv,.mm,.xmind" />
+          <span class="drop-title">选择一个文档文件</span>
+          <span class="drop-hint">Word 会按标题样式或大纲级别生成目录，其他格式会交给本地导入器识别。</span>
         </label>
+        <div class="format-guide" aria-label="支持格式">
+          <strong>支持格式</strong>
+          <span>.docx</span>
+          <span>.pdf</span>
+          <span>.epub</span>
+          <span>.azw3</span>
+          <span>.png</span>
+          <span>.jpg</span>
+          <span>.jpeg</span>
+          <span>.xlsx</span>
+          <span>.xls</span>
+          <span>.csv</span>
+          <span>.mm</span>
+          <span>.xmind</span>
+        </div>
         <div class="actions">
           <button id="parse-btn" class="primary">开始解析</button>
           <button id="sample-btn" class="ghost">载入演示数据</button>
