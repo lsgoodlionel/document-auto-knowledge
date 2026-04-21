@@ -1,27 +1,29 @@
 # Document Knowledge Network
 
-把文档的大纲、标题和章节结构转换成可编辑的知识网络，并支持反向导出新的 Word。
+把文档的大纲、标题、正文和章节结构转换成可编辑的知识网络，并支持多格式导出。
 
 ## 当前能力
 
 - 上传 `.docx`、`.pdf`、`.epub`、`.azw3`、`.png`、`.jpg`、`.jpeg`、`.xlsx`、`.xls`、`.csv`、`.mm`、`.xmind` 文档
-- 通过统一导入入口分发不同格式解析器
-- EPUB 会按 NCX / EPUB3 nav 目录导入章节；没有目录时按 spine 章节顺序兜底，并把章节 HTML 文本写入 note
-- AZW3 已接入格式识别，当前返回需要先转换为 EPUB 或安装 Calibre `ebook-convert` 的能力提示
-- XMind `.xmind` 已接入格式识别，当前返回明确的未支持提示
-- 识别 Word 标题样式和段落大纲级别
-- 从带可选中文本的 PDF 中提取文本，并按标题线索生成层级
-- 图片可作为带来源信息的单节点项目导入
-- OCR 入口已预留；未配置 OCR 依赖时会返回明确提示
-- CSV 会按文件名生成表节点，按每行第一列生成子节点，并把列标题和值写入 note
+- 通过统一导入入口分发不同格式解析器，并把结果落库到 SQLite
+- Word `.docx` 支持识别标题样式、段落大纲级别，并把标题后的正文归入对应节点 `note`
+- EPUB 会按 NCX / EPUB3 nav 目录导入章节；没有目录时按 spine 顺序兜底，并把章节 HTML 文本写入 `note`
+- PDF 会尽量提取可选中文本，并按标题线索生成层级
+- CSV 会按文件名生成表节点，按每行第一列生成子节点，并把列标题和值写入 `note`
 - FreeMind `.mm` 会保留思维导图层级和节点说明
-- 生成目录树和知识网络
-- 导入后在目录预览中显示节点是否包含正文内容
+- 图片可作为带来源信息的单节点项目导入；OCR 入口已预留，未配置时会返回明确提示
+- `.azw3` 已接入格式识别，当前返回需要先转换为 EPUB 或安装 Calibre `ebook-convert` 的能力提示
+- `.xmind` 已接入格式识别，当前返回明确的未支持提示
+- 导入后生成目录树、历史项目列表和知识网络编辑入口
+- 知识网络左侧结构树支持显示级别切换：`1-2 级 / 1-3 级 / 全部`
+- 左侧结构树支持展开同级、收起同级，并在大项目中自动保护首屏渲染
+- 目录总览与关系视图共享同一选中状态，点击任意节点会同步更新右侧节点编辑区
+- 节点可维护标题、正文 `note`、上下级关系和同级顺序
+- 支持跨项目挂接：把一个项目的根节点或整棵根级树挂到另一个项目节点下
+- 导出面板支持导出 `Word / PDF / MM / 图片`
+- 导出 Word 支持中文文件名、标题样式、大纲级别、中文字体和基础段落样式
 - 导入失败时显示后端返回的错误码和说明
-- 节点可维护标题、上下级关系和说明文本
-- 可反向导出新的 Word 文档
-- 后端使用 SQLite 持久化项目和节点
-- 支持前后端分离目录结构
+- 支持前后端分离目录结构，本地一键启动
 
 ## 新工程结构
 
@@ -52,6 +54,19 @@ http://127.0.0.1:8000
 ```
 
 首页可以直接选择支持格式中的任意文件，上传区会列出当前前端接受的扩展名。Word `.docx` 支持离线浏览器解析；PDF、电子书、图片、Excel、思维导图等格式需要通过本地服务导入，暂未支持或缺少依赖时会在页面上显示后端返回的结构化错误。
+
+推荐验证主流程：
+
+1. 在首页上传文档并等待项目创建成功
+2. 点击“进入知识网络”或在“历史项目”里直接打开项目
+3. 在编辑器中查看左侧目录、关系视图和右侧节点正文
+4. 按需要修改节点、挂接其他项目，再从顶部导出文件
+
+说明：
+
+- 首页“打开知识网络”现在统一跳转到独立的 `editor.html` 页面，不再使用旧的页面内注入方式
+- 如果是数据库项目，会优先通过 `editor.html?projectId=...` 加载
+- 如果是离线临时树，会通过 `sessionStorage` 把当前树传入编辑器页
 
 如果多个窗口并行开发导致端口冲突，可以指定不同端口：
 
@@ -101,6 +116,7 @@ PORT=8001 ./start.sh
 - `GET /api/projects/{id}`
 - `PUT /api/projects/{id}`
 - `DELETE /api/projects/{id}`
+- `POST /api/projects/{id}/attachments`
 - `POST /api/projects/{id}/nodes`
 - `PUT /api/nodes/{id}`
 - `PUT /api/nodes/{id}/move`
@@ -124,6 +140,39 @@ PORT=8001 ./start.sh
 - `.mm`：可用。解析 FreeMind XML 中的 `node TEXT` 层级，并读取常见 NOTE 富文本。
 - `.xmind`：入口可识别，但暂不完整解析；API 会返回 `unsupported_format` 和迁移建议。
 - `.xlsx` / `.xls`：入口可识别，但当前建议另存为 `.csv` 后导入。
+
+当前导出状态：
+
+- `docx`：可用，保留标题层级和节点正文 `note`
+- `pdf`：可用，当前为基础结构化导出版本
+- `mm`：可用，导出为 FreeMind XML
+- `png`：可用，当前为基础结构图像导出版本
+
+`GET /api/projects/{id}/export` 支持格式参数，例如：
+
+```text
+/api/projects/11/export?format=docx
+/api/projects/11/export?format=pdf
+/api/projects/11/export?format=mm
+/api/projects/11/export?format=png
+```
+
+跨项目挂接接口：
+
+```json
+POST /api/projects/{id}/attachments
+{
+  "targetParentId": 123,
+  "sourceProjectId": 456,
+  "sourceRootNodeId": 789
+}
+```
+
+说明：
+
+- `sourceRootNodeId` 省略时，会把来源项目的全部根节点挂到目标节点下
+- 目前挂接采用“复制并保留来源标识”的方式，不直接跨项目移动原节点
+- 返回树中会保留 `sourceProjectId`、`sourceProjectName`、`sourceNodeId`、`linkedCopy`
 
 更多说明见：
 
@@ -156,6 +205,22 @@ python3 scripts/context_snapshot.py
 
 然后更新 [docs/PROJECT_STATE.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/PROJECT_STATE.md:1)，并按照 [docs/CONTINUITY_PROTOCOL.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/CONTINUITY_PROTOCOL.md:1) 输出交接摘要。
 
-## V2.0 开发
+## 当前阶段
 
-V1.0 基本功能已完成。V2.0 新窗口接手时请先阅读 [docs/V2_PLAN.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/V2_PLAN.md:1) 和 [docs/V2_PARALLEL_TASKS.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/V2_PARALLEL_TASKS.md:1)，再创建 V2 分支继续。
+V1.0 基础目录解析、知识网络编辑、Word 导出和本地安装包已完成。
+
+V2.0 已完成第一阶段：
+
+- 多格式导入框架
+- 节点正文 `note` 入库与编辑
+- 左侧目录显示级别控制
+- 多格式导出基础框架
+
+V2.1 已完成并合入主线：
+
+- 目录总览与关系视图选中状态统一
+- 跨项目手动挂接上下级
+- 导出面板升级为 `Word / PDF / MM / 图片`
+- 编辑器页统一使用独立页面跳转方式
+
+后续继续开发时，请先阅读 [docs/V2_PLAN.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/V2_PLAN.md:1) 和 [docs/V2_PARALLEL_TASKS.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/V2_PARALLEL_TASKS.md:1)。

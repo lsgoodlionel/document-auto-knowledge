@@ -305,15 +305,19 @@ class BackendApiSmokeTest(unittest.TestCase):
         pdf_export = export_project_file("导出测试", tree, "pdf")
         self.assertEqual(pdf_export.content_type, "application/pdf")
         self.assertTrue(pdf_export.data.startswith(b"%PDF-1.4"))
+        self.assertIn(b"/BaseFont /STSong-Light", pdf_export.data)
+        self.assertIn(b"/Encoding /UniGB-UCS2-H", pdf_export.data)
 
         mm_export = export_project_file("导出测试", tree, "mm")
         self.assertEqual(mm_export.filename, "导出测试.mm")
         self.assertIn(b"<map", mm_export.data)
         self.assertIn("第一章".encode("utf-8"), mm_export.data)
+        self.assertIn(b"\n  <node TEXT=", mm_export.data)
 
         png_export = export_project_file("导出测试", tree, "png")
         self.assertEqual(png_export.content_type, "image/png")
         self.assertEqual(png_export.data[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertGreater(len(png_export.data), 1024)
 
     def test_multi_export_framework_rejects_unsupported_format(self) -> None:
         with self.assertRaises(ExporterError) as context:

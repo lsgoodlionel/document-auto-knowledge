@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import subprocess
 import struct
+import tempfile
 import zlib
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
+from unicodedata import east_asian_width
 from xml.sax.saxutils import escape
 
 from .docx_exporter import build_docx
@@ -66,7 +70,7 @@ def export_project_file(project_name: str, tree: list[dict[str, Any]], format_na
 
 def build_pdf(project_name: str, tree: list[dict[str, Any]]) -> bytes:
     lines = [project_name, ""] + outline_lines(tree)
-    wrapped = wrap_lines(lines, 68)
+    wrapped = wrap_lines(lines, 40)
     page_line_capacity = 45
     pages = [wrapped[index:index + page_line_capacity] for index in range(0, len(wrapped), page_line_capacity)] or [[""]]
     objects: list[bytes] = []
@@ -75,7 +79,14 @@ def build_pdf(project_name: str, tree: list[dict[str, Any]]) -> bytes:
         objects.append(body)
         return len(objects)
 
-    font_id = add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    cid_font_id = add_object(
+        b"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light "
+        b"/CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 4 >> /DW 1000 >>"
+    )
+    font_id = add_object(
+        f"<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H "
+        f"/DescendantFonts [{cid_font_id} 0 R] >>".encode("ascii")
+    )
     page_ids: list[int] = []
     content_ids: list[int] = []
 
@@ -103,16 +114,16 @@ def build_pdf(project_name: str, tree: list[dict[str, Any]]) -> bytes:
 
 
 def pdf_page_stream(lines: list[str]) -> bytes:
-    commands = ["BT", "/F1 12 Tf", "50 790 Td", "14 TL"]
+    commands = ["BT", "/F1 12 Tf", "50 790 Td", "16 TL"]
     for index, line in enumerate(lines):
-        text = escape_pdf_text(line)
+        text = encode_pdf_text(line)
         if index == 0:
-            commands.append(f"({text}) Tj")
+            commands.append(f"<{text}> Tj")
         else:
             commands.append("T*")
-            commands.append(f"({text}) Tj")
+            commands.append(f"<{text}> Tj")
     commands.append("ET")
-    return "\n".join(commands).encode("latin-1", errors="replace")
+    return "\n".join(commands).encode("ascii")
 
 
 def pdf_document(objects: list[bytes], catalog_id: int) -> bytes:
@@ -134,81 +145,58 @@ def pdf_document(objects: list[bytes], catalog_id: int) -> bytes:
     return bytes(buffer)
 
 
-def escape_pdf_text(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+def encode_pdf_text(value: str) -> str:
+    if not value:
+        return ""
+    return value.encode("utf-16-be").hex().upper()
 
 
 def build_freemind_mm(project_name: str, tree: list[dict[str, Any]]) -> bytes:
-    children = "".join(mm_node(node) for node in tree)
-    xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        f'<map version="1.0.1"><node TEXT="{escape(project_name)}">{children}</node></map>'
+    children = "\n".join(mm_node(node, 1) for node in tree)
+    xml = "\n".join(
+        [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            "<map version=\"1.0.1\">",
+            f"  <node TEXT=\"{escape(project_name)}\">",
+            children,
+            "  </node>",
+            "</map>",
+        ]
     )
     return xml.encode("utf-8")
 
 
-def mm_node(node: dict[str, Any]) -> str:
+def mm_node(node: dict[str, Any], depth: int) -> str:
+    indent = "  " * (depth + 1)
     title = escape(str(node.get("title") or node.get("name") or "untitled"))
     note = (node.get("note") or "").strip()
-    note_xml = ""
+    parts = [f'{indent}<node TEXT="{title}">']
     if note:
-        note_xml = (
-            '<richcontent TYPE="NOTE"><html><body>'
-            f"<p>{escape(note).replace(chr(10), '</p><p>')}</p>"
-            "</body></html></richcontent>"
+        note_html = "".join(f"<p>{escape(line)}</p>" for line in note.splitlines() if line.strip()) or "<p></p>"
+        parts.append(
+            f"{indent}  <richcontent TYPE=\"NOTE\"><html><body>{note_html}</body></html></richcontent>"
         )
-    children = "".join(mm_node(child) for child in node.get("children", []))
-    return f'<node TEXT="{title}">{note_xml}{children}</node>'
+    for child in node.get("children", []):
+        parts.append(mm_node(child, depth + 1))
+    parts.append(f"{indent}</node>")
+    return "\n".join(parts)
 
 
 def build_png(project_name: str, tree: list[dict[str, Any]]) -> bytes:
-    lines = [project_name] + outline_lines(tree)
-    width = 480
-    row_height = 10
-    height = max(64, min(1200, 24 + len(lines) * row_height))
-    pixels = bytearray()
-    for y in range(height):
-        pixels.append(0)
-        for x in range(width):
-            pixels.extend(png_pixel(x, y, width, height, lines, row_height))
-
-    raw = zlib.compress(bytes(pixels), level=9)
-    return b"".join(
-        [
-            b"\x89PNG\r\n\x1a\n",
-            png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)),
-            png_chunk(b"IDAT", raw),
-            png_chunk(b"IEND", b""),
-        ]
-    )
-
-
-def png_pixel(x: int, y: int, width: int, height: int, lines: list[str], row_height: int) -> bytes:
-    if y < 18:
-        return bytes((43, 87, 151))
-    if y >= height - 14:
-        return bytes((26, 34, 48))
-    row_index = min(max((y - 24) // row_height, 0), max(len(lines) - 1, 0))
-    indent = min(row_index_indent(lines[row_index]) * 24, width - 20)
-    if x < indent:
-        return bytes((245, 247, 250))
-    stripe = row_index % 2
-    if stripe == 0:
-        return bytes((236, 242, 248))
-    return bytes((224, 233, 243))
-
-
-def row_index_indent(line: str) -> int:
-    return len(line) - len(line.lstrip(" "))
-
-
-def png_chunk(chunk_type: bytes, data: bytes) -> bytes:
-    return (
-        struct.pack(">I", len(data))
-        + chunk_type
-        + data
-        + struct.pack(">I", zlib.crc32(chunk_type + data) & 0xFFFFFFFF)
-    )
+    html = build_outline_html(project_name, tree)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        html_path = tmp_path / "outline.html"
+        html_path.write_text(html, encoding="utf-8")
+        command = ["qlmanage", "-t", "-s", "2400", "-o", tmpdir, str(html_path)]
+        try:
+            subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            raise ExporterError("png_export_unavailable", "PNG export is not available on this platform.") from exc
+        png_path = tmp_path / "outline.html.png"
+        if not png_path.exists():
+            raise ExporterError("png_export_unavailable", "PNG export did not produce an output file.")
+        return png_path.read_bytes()
 
 
 def outline_lines(nodes: list[dict[str, Any]], depth: int = 0) -> list[str]:
@@ -231,12 +219,87 @@ def wrap_lines(lines: list[str], width: int) -> list[str]:
         if not line:
             wrapped.append("")
             continue
-        current = line
-        while len(current) > width:
-            wrapped.append(current[:width])
-            current = current[width:]
+        current = ""
+        current_width = 0
+        for char in line:
+            char_width = display_width(char)
+            if current and current_width + char_width > width:
+                wrapped.append(current)
+                current = char
+                current_width = char_width
+            else:
+                current += char
+                current_width += char_width
         wrapped.append(current)
     return wrapped
+
+
+def display_width(value: str) -> int:
+    return 2 if east_asian_width(value) in {"W", "F"} else 1
+
+
+def build_outline_html(project_name: str, tree: list[dict[str, Any]]) -> str:
+    body = build_outline_html_nodes(tree)
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>{escape(project_name)}</title>
+    <style>
+      body {{
+        margin: 0;
+        padding: 40px 48px;
+        font-family: "Hiragino Sans GB", "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: #1c2430;
+        background: linear-gradient(180deg, #fbf8f2 0%, #f1efe8 100%);
+      }}
+      h1 {{
+        margin: 0 0 20px;
+        font-size: 34px;
+      }}
+      .tree {{
+        display: grid;
+        gap: 10px;
+        font-size: 16px;
+        line-height: 1.6;
+      }}
+      .node {{
+        background: rgba(255,255,255,0.9);
+        border: 1px solid rgba(30, 46, 74, 0.12);
+        border-radius: 14px;
+        padding: 10px 14px;
+        margin-left: calc(var(--depth) * 24px);
+        box-shadow: 0 10px 24px rgba(28, 36, 48, 0.06);
+      }}
+      .title {{
+        font-weight: 700;
+      }}
+      .note {{
+        margin-top: 6px;
+        color: #4a5565;
+        white-space: pre-wrap;
+      }}
+    </style>
+  </head>
+  <body>
+    <h1>{escape(project_name)}</h1>
+    <div class="tree">{body}</div>
+  </body>
+</html>"""
+
+
+def build_outline_html_nodes(nodes: list[dict[str, Any]], depth: int = 0) -> str:
+    parts: list[str] = []
+    for node in nodes:
+        title = escape(str(node.get("title") or node.get("name") or "untitled"))
+        note = escape(str(node.get("note") or "").strip())
+        parts.append(f'<section class="node" style="--depth:{depth}"><div class="title">{title}</div>')
+        if note:
+            parts.append(f'<div class="note">{note}</div>')
+        parts.append("</section>")
+        if node.get("children"):
+            parts.append(build_outline_html_nodes(node["children"], depth + 1))
+    return "".join(parts)
 
 
 registry = ExportRegistry()
