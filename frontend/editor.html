@@ -60,6 +60,29 @@
                 <textarea id="node-note" rows="8" placeholder="为当前节点补充说明、内容摘要或备注。"></textarea>
               </label>
 
+              <section id="cross-project-linking" class="linking-panel">
+                <div class="panel-head">
+                  <h3>跨项目挂接</h3>
+                  <span id="link-target-label" class="badge">挂接到当前节点</span>
+                </div>
+                <p id="linking-hint" class="section-note compact">把另一个已导入项目的根节点复制挂接到当前选中节点下，并保留来源项目标识。</p>
+                <label class="field">
+                  <span>来源项目</span>
+                  <select id="link-source-project">
+                    <option value="">请选择来源项目</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>来源根节点</span>
+                  <select id="link-source-root">
+                    <option value="">整个来源项目</option>
+                  </select>
+                </label>
+                <div class="actions wrap">
+                  <button id="attach-project-link" class="ghost" type="button">挂接到当前节点</button>
+                </div>
+              </section>
+
               <div class="actions wrap">
                 <button id="save-node" class="primary">保存当前节点</button>
                 <button id="add-child" class="ghost">新增子节点</button>
