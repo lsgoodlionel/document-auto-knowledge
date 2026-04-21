@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS nodes (
   parent_id INTEGER,
   title TEXT NOT NULL,
   note TEXT NOT NULL DEFAULT '',
+  source_type TEXT NOT NULL DEFAULT '',
+  metadata TEXT NOT NULL DEFAULT '{}',
   position INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -40,6 +42,14 @@ def init_db(db_path: Path | None = None) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        ensure_column(conn, "nodes", "source_type", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "nodes", "metadata", "TEXT NOT NULL DEFAULT '{}'")
+
+
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
