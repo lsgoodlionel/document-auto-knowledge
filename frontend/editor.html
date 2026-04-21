@@ -16,9 +16,27 @@
             点击任意节点查看上下级关系，并在右侧维护标题与文本说明。
           </p>
         </div>
-        <div class="actions wrap">
+        <div class="editor-topbar-actions">
           <a id="return-home" class="ghost button-link" href="./index.html">返回解析页</a>
-          <button id="export-docx" class="primary">导出新的 Word</button>
+          <section class="export-panel" aria-label="导出文件">
+            <div class="export-panel-head">
+              <strong>导出文件</strong>
+              <span id="export-filename" class="export-filename">knowledge-network.docx</span>
+            </div>
+            <div class="export-panel-controls">
+              <label class="export-field">
+                <span>格式</span>
+                <select id="export-format">
+                  <option value="docx">Word</option>
+                  <option value="pdf">PDF</option>
+                  <option value="mm">MM</option>
+                  <option value="png">图片</option>
+                </select>
+              </label>
+              <button id="export-file" class="primary">开始导出</button>
+            </div>
+            <p id="export-status" class="export-status">Word 支持本地导出，其他格式通过后端导出接口生成。</p>
+          </section>
         </div>
       </section>
 
@@ -63,6 +81,8 @@
               <span id="selection-path" class="badge">暂无路径</span>
             </div>
 
+            <div id="selection-summary" class="selection-summary empty">当前未选择节点。</div>
+
             <div class="form-stack">
               <label class="field">
                 <span>节点标题</span>
@@ -77,6 +97,29 @@
                 <span id="note-status">未选择节点</span>
                 <span>预留：富文本、图片、表格</span>
               </div>
+
+              <section id="cross-project-linking" class="linking-panel">
+                <div class="panel-head">
+                  <h3>跨项目挂接</h3>
+                  <span id="link-target-label" class="badge">挂接到当前节点</span>
+                </div>
+                <p id="linking-hint" class="section-note compact">把另一个已导入项目的根节点复制挂接到当前选中节点下，并保留来源项目标识。</p>
+                <label class="field">
+                  <span>来源项目</span>
+                  <select id="link-source-project">
+                    <option value="">请选择来源项目</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>来源根节点</span>
+                  <select id="link-source-root">
+                    <option value="">整个来源项目</option>
+                  </select>
+                </label>
+                <div class="actions wrap">
+                  <button id="attach-project-link" class="ghost" type="button">挂接到当前节点</button>
+                </div>
+              </section>
 
               <div class="actions wrap">
                 <button id="save-node" class="primary">保存当前节点</button>

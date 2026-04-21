@@ -18,6 +18,7 @@ from backend.services import projects
 from backend.services.docx_exporter import build_docx
 from backend.services.docx_parser import DocxFolderParser
 from backend.services.importers import ImporterError, import_file, registry
+from backend.services.exporters import ExporterError, export_project_file
 
 
 class BackendApiSmokeTest(unittest.TestCase):
@@ -207,6 +208,54 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertIn("source_type", columns)
         self.assertIn("metadata", columns)
 
+    def test_attach_root_node_from_another_project_preserves_source_identity(self) -> None:
+        with db.connect() as conn:
+            target_project_id = projects.create_project(conn, "中图法")
+            source_project_id = projects.create_project(conn, "囚徒的困境")
+            conn.commit()
+
+        social = projects.create_node(target_project_id, None, "社会科学")
+        target_parent = projects.create_node(target_project_id, social["id"], "博弈论")
+        source_root = projects.create_node(source_project_id, None, "囚徒的困境", "冲突与合作")
+        source_child = projects.create_node(source_project_id, source_root["id"], "重复博弈", "长期关系")
+
+        attached_project = projects.attach_project_subtree(
+            target_project_id,
+            target_parent["id"],
+            source_project_id,
+            source_root["id"],
+        )
+
+        attached_root = attached_project["tree"][0]["children"][0]["children"][0]
+        self.assertEqual(attached_root["title"], "囚徒的困境")
+        self.assertEqual(attached_root["note"], "冲突与合作")
+        self.assertEqual(attached_root["sourceProjectId"], source_project_id)
+        self.assertEqual(attached_root["sourceProjectName"], "囚徒的困境")
+        self.assertEqual(attached_root["sourceNodeId"], source_root["id"])
+        self.assertTrue(attached_root["linkedCopy"])
+        self.assertEqual(attached_root["children"][0]["title"], "重复博弈")
+        self.assertEqual(attached_root["children"][0]["sourceNodeId"], source_child["id"])
+
+        source_project = projects.get_project(source_project_id)
+        self.assertEqual(source_project["tree"][0]["title"], "囚徒的困境")
+        self.assertEqual(source_project["tree"][0]["children"][0]["title"], "重复博弈")
+
+    def test_attach_whole_project_adds_all_source_roots(self) -> None:
+        with db.connect() as conn:
+            target_project_id = projects.create_project(conn, "中图法")
+            source_project_id = projects.create_project(conn, "社会科学案例")
+            conn.commit()
+
+        target_parent = projects.create_node(target_project_id, None, "社会科学")
+        first_root = projects.create_node(source_project_id, None, "囚徒的困境")
+        second_root = projects.create_node(source_project_id, None, "公共选择")
+
+        attached_project = projects.attach_project_subtree(target_project_id, target_parent["id"], source_project_id)
+        attached_titles = [node["title"] for node in attached_project["tree"][0]["children"]]
+        self.assertEqual(attached_titles, ["囚徒的困境", "公共选择"])
+        self.assertEqual(attached_project["tree"][0]["children"][0]["sourceNodeId"], first_root["id"])
+        self.assertEqual(attached_project["tree"][0]["children"][1]["sourceNodeId"], second_root["id"])
+
     def test_error_payload_shape(self) -> None:
         from backend.server import error_response
 
@@ -246,6 +295,33 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertIn("filename*=UTF-8''", header)
         self.assertIn("%E5%AF%BC%E5%87%BA%E6%B5%8B%E8%AF%95.docx", header)
 
+    def test_multi_export_framework_outputs_expected_formats(self) -> None:
+        tree = sample_tree()
+
+        docx_export = export_project_file("导出测试", tree, "docx")
+        self.assertEqual(docx_export.filename, "导出测试.docx")
+        self.assertTrue(docx_export.data.startswith(b"PK"))
+
+        pdf_export = export_project_file("导出测试", tree, "pdf")
+        self.assertEqual(pdf_export.content_type, "application/pdf")
+        self.assertTrue(pdf_export.data.startswith(b"%PDF-1.4"))
+
+        mm_export = export_project_file("导出测试", tree, "mm")
+        self.assertEqual(mm_export.filename, "导出测试.mm")
+        self.assertIn(b"<map", mm_export.data)
+        self.assertIn("第一章".encode("utf-8"), mm_export.data)
+
+        png_export = export_project_file("导出测试", tree, "png")
+        self.assertEqual(png_export.content_type, "image/png")
+        self.assertEqual(png_export.data[:8], b"\x89PNG\r\n\x1a\n")
+
+    def test_multi_export_framework_rejects_unsupported_format(self) -> None:
+        with self.assertRaises(ExporterError) as context:
+            export_project_file("导出测试", sample_tree(), "svg")
+
+        self.assertEqual(context.exception.code, "unsupported_export_format")
+        self.assertIn("svg", context.exception.message)
+
 
 class HttpApiSmokeTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -274,6 +350,22 @@ class HttpApiSmokeTest(unittest.TestCase):
         data = response.read()
         connection.close()
         return response.status, json.loads(data.decode("utf-8"))
+
+    def request_binary(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, object] | None = None,
+    ) -> tuple[int, dict[str, str], bytes]:
+        connection = HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
+        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+        headers = {"Content-Type": "application/json"} if payload is not None else {}
+        connection.request(method, path, body=body, headers=headers)
+        response = connection.getresponse()
+        data = response.read()
+        response_headers = {key: value for key, value in response.getheaders()}
+        connection.close()
+        return response.status, response_headers, data
 
     def test_project_and_node_api_smoke(self) -> None:
         with db.connect() as conn:
@@ -378,6 +470,74 @@ class HttpApiSmokeTest(unittest.TestCase):
         )
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"]["code"], "unsupported_format")
+
+    def test_cross_project_attachment_api(self) -> None:
+        with db.connect() as conn:
+            target_project_id = projects.create_project(conn, "中图法")
+            source_project_id = projects.create_project(conn, "囚徒的困境")
+            conn.commit()
+
+        target_parent = projects.create_node(target_project_id, None, "社会科学")
+        source_root = projects.create_node(source_project_id, None, "囚徒的困境", "合作困境")
+        projects.create_node(source_project_id, source_root["id"], "纳什均衡", "均衡说明")
+
+        status, payload = self.request(
+            "POST",
+            f"/api/projects/{target_project_id}/attachments",
+            {
+                "targetParentId": target_parent["id"],
+                "sourceProjectId": source_project_id,
+                "sourceRootNodeId": source_root["id"],
+            },
+        )
+        self.assertEqual(status, 200)
+        attached_root = payload["project"]["tree"][0]["children"][0]
+        self.assertEqual(attached_root["title"], "囚徒的困境")
+        self.assertEqual(attached_root["sourceProjectId"], source_project_id)
+        self.assertEqual(attached_root["sourceProjectName"], "囚徒的困境")
+        self.assertTrue(attached_root["linkedCopy"])
+
+        status, payload = self.request(
+            "POST",
+            f"/api/projects/{target_project_id}/attachments",
+            {
+                "targetParentId": target_parent["id"],
+                "sourceProjectId": target_project_id,
+            },
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "bad_request")
+
+    def test_export_endpoint_supports_multiple_formats(self) -> None:
+        with db.connect() as conn:
+            project_id = projects.create_project(conn, "导出接口")
+            projects.insert_tree(conn, project_id, None, sample_tree())
+            conn.commit()
+
+        status, headers, data = self.request_binary("GET", f"/api/projects/{project_id}/export")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        self.assertTrue(data.startswith(b"PK"))
+        self.assertIn("download.docx", headers["Content-Disposition"])
+
+        status, headers, data = self.request_binary("GET", f"/api/projects/{project_id}/export?format=pdf")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/pdf")
+        self.assertTrue(data.startswith(b"%PDF-1.4"))
+
+        status, headers, data = self.request_binary("GET", f"/api/projects/{project_id}/export?format=mm")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/x-freemind")
+        self.assertIn(b"<map", data)
+
+        status, headers, data = self.request_binary("GET", f"/api/projects/{project_id}/export?format=png")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "image/png")
+        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+
+        status, payload = self.request("GET", f"/api/projects/{project_id}/export?format=svg")
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "unsupported_export_format")
 
 
 class WordImportExportSmokeTest(unittest.TestCase):
@@ -649,3 +809,28 @@ def build_zip(files: dict[str, str], *, store_mimetype: bool = False) -> bytes:
             compression = zipfile.ZIP_STORED if store_mimetype and name == "mimetype" else zipfile.ZIP_DEFLATED
             archive.writestr(name, content, compress_type=compression)
     return buffer.getvalue()
+
+
+def sample_tree() -> list[dict[str, object]]:
+    return [
+        {
+            "title": "第一章",
+            "note": "第一章正文第一段\n第一章正文第二段",
+            "children": [
+                {
+                    "title": "第一节",
+                    "note": "第一节正文",
+                    "children": [],
+                }
+            ],
+        },
+        {
+            "title": "第二章",
+            "note": "第二章正文",
+            "children": [],
+        },
+    ]
+
+
+if __name__ == "__main__":
+    unittest.main()

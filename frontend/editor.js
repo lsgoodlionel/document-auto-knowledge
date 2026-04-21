@@ -13,6 +13,32 @@ const state = {
   collapsedIds: new Set(),
   apiMode: false,
   busy: false,
+  availableProjects: [],
+  sourceProjectTree: [],
+  exporting: false,
+};
+
+const EXPORT_FORMATS = {
+  docx: {
+    label: "Word",
+    extension: "docx",
+    mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  },
+  pdf: {
+    label: "PDF",
+    extension: "pdf",
+    mime: "application/pdf",
+  },
+  mm: {
+    label: "MM",
+    extension: "mm",
+    mime: "application/xml",
+  },
+  png: {
+    label: "图片",
+    extension: "png",
+    mime: "image/png",
+  },
 };
 
 const outlineTree = document.querySelector("#outline-tree");
@@ -24,6 +50,7 @@ const networkCanvas = document.querySelector("#network-canvas");
 const networkMeta = document.querySelector("#network-meta");
 const focusLabel = document.querySelector("#focus-label");
 const selectionPath = document.querySelector("#selection-path");
+const selectionSummary = document.querySelector("#selection-summary");
 const nodeTitle = document.querySelector("#node-title");
 const nodeNote = document.querySelector("#node-note");
 const noteStatus = document.querySelector("#note-status");
@@ -31,9 +58,17 @@ const saveNode = document.querySelector("#save-node");
 const addChild = document.querySelector("#add-child");
 const addSibling = document.querySelector("#add-sibling");
 const deleteNode = document.querySelector("#delete-node");
-const exportDocx = document.querySelector("#export-docx");
+const exportFormat = document.querySelector("#export-format");
+const exportFile = document.querySelector("#export-file");
+const exportFilename = document.querySelector("#export-filename");
+const exportStatus = document.querySelector("#export-status");
 const editorSubtitle = document.querySelector("#editor-subtitle");
 const returnHome = document.querySelector("#return-home");
+const linkTargetLabel = document.querySelector("#link-target-label");
+const linkSourceProject = document.querySelector("#link-source-project");
+const linkSourceRoot = document.querySelector("#link-source-root");
+const attachProjectLink = document.querySelector("#attach-project-link");
+const linkingHint = document.querySelector("#linking-hint");
 
 boot();
 
@@ -118,6 +153,45 @@ saveNode.addEventListener("click", async () => {
   selected.title = title;
   selected.note = note;
   render();
+});
+
+linkSourceProject.addEventListener("change", async () => {
+  await runEditorAction(async () => {
+    await loadSourceProjectTree(linkSourceProject.value);
+  });
+});
+
+attachProjectLink.addEventListener("click", async () => {
+  if (!state.apiMode || !state.projectId) {
+    return;
+  }
+
+  const sourceProjectId = Number(linkSourceProject.value);
+  if (!sourceProjectId) {
+    editorSubtitle.textContent = "请先选择来源项目。";
+    return;
+  }
+
+  const sourceRootValue = linkSourceRoot.value;
+  const targetParentId = state.selectedId || null;
+  const sourceRootNodeId = sourceRootValue ? Number(sourceRootValue) : null;
+
+  await runEditorAction(async () => {
+    const data = await apiRequest(`/api/projects/${state.projectId}/attachments`, {
+      method: "POST",
+      body: {
+        targetParentId,
+        sourceProjectId,
+        sourceRootNodeId,
+      },
+    });
+    state.name = data.project.name || state.name;
+    state.tree = normalizeTree(data.project.tree || []);
+    state.selectedId = targetParentId || state.tree[0]?.id || null;
+    editorSubtitle.textContent = "跨项目挂接已保存。";
+    await loadAvailableProjects();
+    await loadSourceProjectTree(linkSourceProject.value);
+  });
 });
 
 addChild.addEventListener("click", async () => {
@@ -245,24 +319,44 @@ collapseSiblings.addEventListener("click", () => {
   setSiblingExpansion(false);
 });
 
-exportDocx.addEventListener("click", () => {
+exportFormat.addEventListener("change", () => {
+  updateExportPanel();
+});
+
+exportFile.addEventListener("click", async () => {
   if (!state.tree.length) {
-    editorSubtitle.textContent = "没有可导出的知识网络。";
+    setExportStatus("没有可导出的知识网络。", "error");
     return;
   }
 
-  if (state.apiMode) {
-    window.location.assign(`/api/projects/${state.projectId}/export`);
-    editorSubtitle.textContent = "正在按数据库中的最新结构导出 Word。";
+  const formatKey = exportFormat.value;
+  const format = EXPORT_FORMATS[formatKey] || EXPORT_FORMATS.docx;
+  const filename = buildExportFilename(formatKey);
+
+  if (!state.apiMode) {
+    if (formatKey !== "docx") {
+      setExportStatus("离线打开编辑器时目前只支持导出 Word。请选择 Word，或通过本地服务打开后导出其他格式。", "error");
+      return;
+    }
+
+    const docxBytes = buildKnowledgeDocx(state.tree, state.name);
+    downloadBlob(filename, new Blob([docxBytes], { type: format.mime }));
+    setExportStatus("新的 Word 文档已生成并开始下载。", "success");
     return;
   }
 
-  const docxBytes = buildKnowledgeDocx(state.tree, state.name);
-  downloadBlob(`${state.name || "knowledge-network"}.docx`, new Blob([docxBytes], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }));
-  editorSubtitle.textContent = "新的 Word 文档已生成并开始下载。";
+  await runExportAction(async () => {
+    setExportStatus(`正在导出 ${format.label}...`);
+    const result = await requestExport(formatKey);
+    validateExportResponse(formatKey, result);
+    downloadBlob(result.filename || filename, result.blob);
+    setExportStatus(`${format.label} 文件已生成并开始下载。`, "success");
+  });
 });
 
 function render() {
+  ensureSelectedNode();
+  updateExportPanel();
   renderOutline();
   renderInspector();
   renderNetwork();
@@ -279,21 +373,30 @@ function renderEmptyState(message = "当前没有可编辑的知识网络，请�
   nodeCount.textContent = "0 个节点";
   focusLabel.textContent = "未选择节点";
   selectionPath.textContent = "暂无路径";
+  selectionSummary.textContent = "当前未选择节点。";
+  selectionSummary.classList.add("empty");
+  updateExportPanel();
   toggleEditor(false);
+  linkTargetLabel.textContent = "挂接到当前节点";
+  linkingHint.textContent = "把另一个已导入项目的根节点复制挂接到当前选中节点下，并保留来源项目标识。";
 }
 
 function toggleEditor(enabled) {
-  const disabled = !enabled || state.busy;
+  const disabled = !enabled || state.busy || state.exporting;
   nodeTitle.disabled = disabled;
   nodeNote.disabled = disabled;
   saveNode.disabled = disabled;
   addChild.disabled = disabled;
   addSibling.disabled = disabled;
   deleteNode.disabled = disabled;
-  exportDocx.disabled = disabled;
   outlineLevelFilter.disabled = !enabled;
   expandSiblings.disabled = disabled;
   collapseSiblings.disabled = disabled;
+  linkSourceProject.disabled = disabled || !state.apiMode;
+  linkSourceRoot.disabled = disabled || !state.apiMode;
+  attachProjectLink.disabled = disabled || !state.apiMode;
+  exportFormat.disabled = disabled;
+  exportFile.disabled = disabled;
 }
 
 function renderOutline() {
@@ -353,16 +456,14 @@ function createOutlineList(nodes, depth = 1, renderContext = { rendered: 0, trun
     button.className = `outline-node ${node.id === state.selectedId ? "active" : ""}`;
     const title = document.createElement("span");
     title.className = "tree-title";
-    title.textContent = node.name;
+    title.textContent = formatNodeLabel(node);
     const badge = document.createElement("span");
     const hasNote = Boolean((node.note || "").trim());
     badge.className = `content-badge ${hasNote ? "has-content" : "no-content"}`;
     badge.textContent = hasNote ? "有正文" : "无正文";
     button.append(title, badge);
     button.addEventListener("click", () => {
-      state.selectedId = node.id;
-      revealNodeInOutline(node.id, false);
-      render();
+      selectNode(node.id);
     });
     row.append(toggle, button);
     item.appendChild(row);
@@ -378,28 +479,34 @@ function createOutlineList(nodes, depth = 1, renderContext = { rendered: 0, trun
 }
 
 function renderInspector() {
-  const selected = findNode(state.selectedId);
+  const selected = getSelectedNode();
   if (!selected) {
     nodeTitle.value = "";
     nodeNote.value = "";
     updateNoteStatus(null);
-    focusLabel.textContent = "未选择节点";
-    selectionPath.textContent = "暂无路径";
+    renderSelectedNodeDetails(null);
+    linkTargetLabel.textContent = "挂接到项目根级";
+    linkingHint.textContent = "当前未选择节点，挂接时会追加到项目根级。";
     return;
   }
 
   nodeTitle.value = selected.name;
   nodeNote.value = selected.note || "";
   updateNoteStatus(selected);
-  focusLabel.textContent = selected.name;
-  selectionPath.textContent = buildPath(selected.id).join(" / ");
+  renderSelectedNodeDetails(selected);
+  linkTargetLabel.textContent = `挂接到：${selected.name}`;
+  linkingHint.textContent = selected.linkedCopy && selected.sourceProjectName
+    ? `当前节点来自 ${selected.sourceProjectName}，仍可继续作为挂接目标。`
+    : "把另一个已导入项目的根节点复制挂接到当前选中节点下，并保留来源项目标识。";
 }
 
 function renderNetwork() {
-  const selected = findNode(state.selectedId);
+  const selected = getSelectedNode();
   if (!selected) {
     networkCanvas.textContent = "请先从左侧目录中选择一个节点。";
     networkCanvas.classList.add("empty");
+    networkMeta.textContent = "当前会显示所选节点的上级与下级关系。";
+    networkMeta.classList.add("empty");
     return;
   }
 
@@ -442,14 +549,13 @@ function createGraphNode(node, type) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = `graph-node ${type}`;
+  button.setAttribute("aria-pressed", node.id === state.selectedId ? "true" : "false");
   button.innerHTML = `
-    <strong>${escapeHtml(node.name)}</strong>
+    <strong>${escapeHtml(formatNodeLabel(node))}</strong>
     <span>${node.children.length} 个下级</span>
   `;
   button.addEventListener("click", () => {
-    state.selectedId = node.id;
-    revealNodeInOutline(node.id, true);
-    render();
+    selectNode(node.id);
   });
   return button;
 }
@@ -560,6 +666,51 @@ function collectExpandableIds(nodes, ids = []) {
   return ids;
 }
 
+// Smoke note:
+// Outline clicks and graph clicks must both flow through this single selection path,
+// so the inspector, badges, and relation view always point at the same node.
+function selectNode(nodeId) {
+  if (!nodeId) {
+    return;
+  }
+  if (!findNode(nodeId)) {
+    return;
+  }
+  state.selectedId = nodeId;
+  revealNodeInOutline(nodeId, true);
+  render();
+}
+
+function getSelectedNode() {
+  ensureSelectedNode();
+  return findNode(state.selectedId);
+}
+
+function ensureSelectedNode() {
+  if (state.selectedId && findNode(state.selectedId)) {
+    return;
+  }
+  state.selectedId = state.tree[0]?.id || null;
+}
+
+function renderSelectedNodeDetails(selected) {
+  if (!selected) {
+    focusLabel.textContent = "未选择节点";
+    selectionPath.textContent = "暂无路径";
+    selectionSummary.textContent = "当前未选择节点。";
+    selectionSummary.classList.add("empty");
+    return;
+  }
+
+  const path = buildPath(selected.id).join(" / ");
+  const parent = getAncestors(selected.id).at(-1);
+  const childCount = selected.children.length;
+  focusLabel.textContent = selected.name;
+  selectionPath.textContent = path;
+  selectionSummary.textContent = `当前节点：${selected.name}；上级：${parent?.name || "无"}；下级：${childCount} 个。`;
+  selectionSummary.classList.remove("empty");
+}
+
 function normalizeTree(nodes) {
   return nodes.map((node) => normalizeNode(node));
 }
@@ -573,6 +724,12 @@ function normalizeNode(node) {
     name,
     title: name,
     note: node.note || "",
+    sourceType: node.sourceType || node.source_type || "",
+    metadata: node.metadata || {},
+    sourceProjectId: node.sourceProjectId ?? node.source_project_id ?? null,
+    sourceProjectName: node.sourceProjectName || null,
+    sourceNodeId: node.sourceNodeId ?? node.source_node_id ?? null,
+    linkedCopy: Boolean(node.linkedCopy),
     position: Number.isInteger(node.position) ? node.position : 0,
     children: normalizeTree(node.children || []),
   };
@@ -710,9 +867,11 @@ async function loadProject(preferredSelectedId = state.selectedId) {
   const project = data.project;
   state.name = project.name || "folder-system";
   state.tree = normalizeTree(project.tree || []);
-  state.selectedId = findNode(preferredSelectedId)?.id || state.tree[0]?.id || null;
+  state.selectedId = preferredSelectedId;
+  ensureSelectedNode();
   protectLargeOutline();
   revealNodeInOutline(state.selectedId, false);
+  await loadAvailableProjects();
   editorSubtitle.textContent = `正在编辑：${state.name}`;
   render();
 }
@@ -736,6 +895,26 @@ async function runEditorAction(action, shouldRender = true) {
       toggleEditor(Boolean(state.tree.length));
       persistState();
     }
+  }
+}
+
+async function runExportAction(action) {
+  if (state.busy || state.exporting) {
+    return;
+  }
+
+  state.exporting = true;
+  const originalLabel = exportFile.textContent;
+  exportFile.textContent = "导出中...";
+  toggleEditor(Boolean(state.tree.length));
+  try {
+    await action();
+  } catch (error) {
+    setExportStatus(error.message || "导出失败，请稍后重试。", "error");
+  } finally {
+    state.exporting = false;
+    exportFile.textContent = originalLabel;
+    toggleEditor(Boolean(state.tree.length));
   }
 }
 
@@ -770,6 +949,78 @@ async function findProjectIdByName(name) {
   }
 }
 
+async function loadAvailableProjects() {
+  if (!state.apiMode) {
+    state.availableProjects = [];
+    renderLinkSourceProjectOptions();
+    return;
+  }
+
+  try {
+    const data = await apiRequest("/api/projects");
+    state.availableProjects = (data.projects || []).filter((project) => project.id !== state.projectId);
+  } catch (error) {
+    state.availableProjects = [];
+  }
+  renderLinkSourceProjectOptions();
+}
+
+async function loadSourceProjectTree(projectId) {
+  const parsedId = Number(projectId);
+  if (!parsedId) {
+    state.sourceProjectTree = [];
+    renderLinkSourceRootOptions();
+    return;
+  }
+
+  const data = await apiRequest(`/api/projects/${parsedId}`);
+  state.sourceProjectTree = normalizeTree(data.project.tree || []);
+  renderLinkSourceRootOptions();
+}
+
+function renderLinkSourceProjectOptions() {
+  const currentValue = linkSourceProject.value;
+  linkSourceProject.innerHTML = '<option value="">请选择来源项目</option>';
+  state.availableProjects.forEach((project) => {
+    const option = document.createElement("option");
+    option.value = String(project.id);
+    option.textContent = project.name;
+    linkSourceProject.appendChild(option);
+  });
+  if (state.availableProjects.some((project) => String(project.id) === currentValue)) {
+    linkSourceProject.value = currentValue;
+  } else {
+    linkSourceProject.value = "";
+  }
+  if (!linkSourceProject.value) {
+    state.sourceProjectTree = [];
+  }
+  renderLinkSourceRootOptions();
+}
+
+function renderLinkSourceRootOptions() {
+  const currentValue = linkSourceRoot.value;
+  linkSourceRoot.innerHTML = '<option value="">整个来源项目</option>';
+  state.sourceProjectTree.forEach((node) => {
+    const option = document.createElement("option");
+    option.value = String(node.id);
+    option.textContent = node.name;
+    linkSourceRoot.appendChild(option);
+  });
+  if (state.sourceProjectTree.some((node) => String(node.id) === currentValue)) {
+    linkSourceRoot.value = currentValue;
+  } else {
+    linkSourceRoot.value = "";
+  }
+}
+
+function formatNodeLabel(node) {
+  if (node.linkedCopy && node.sourceProjectName) {
+    return `${node.name} [来自 ${node.sourceProjectName}]`;
+  }
+  return node.name;
+}
+
 function applyNodePatch(target, patch) {
   const node = normalizeNode({
     ...target,
@@ -779,12 +1030,100 @@ function applyNodePatch(target, patch) {
   target.name = node.name;
   target.title = node.title;
   target.note = node.note;
+  target.sourceType = node.sourceType;
+  target.metadata = node.metadata;
   target.parentId = node.parentId;
   target.position = node.position;
 }
 
 function countNodes(nodes) {
   return nodes.reduce((total, node) => total + 1 + countNodes(node.children), 0);
+}
+
+function updateExportPanel() {
+  exportFilename.textContent = buildExportFilename(exportFormat.value);
+  if (!state.tree.length) {
+    setExportStatus("加载项目后即可导出当前知识网络。");
+    return;
+  }
+  if (!state.apiMode && exportFormat.value !== "docx") {
+    setExportStatus("当前是离线编辑状态，其他格式需要通过本地服务导出。");
+    return;
+  }
+  if (!state.exporting && !exportStatus.dataset.tone) {
+    const label = EXPORT_FORMATS[exportFormat.value]?.label || "文件";
+    setExportStatus(`将导出当前知识网络为 ${label} 文件。`);
+  }
+}
+
+function buildExportFilename(formatKey) {
+  const format = EXPORT_FORMATS[formatKey] || EXPORT_FORMATS.docx;
+  return `${sanitizeName(state.name || "knowledge-network")}.${format.extension}`;
+}
+
+function setExportStatus(message, tone = "neutral") {
+  exportStatus.textContent = message;
+  exportStatus.dataset.tone = tone === "neutral" ? "" : tone;
+}
+
+async function requestExport(formatKey) {
+  const url = `/api/projects/${state.projectId}/export?format=${encodeURIComponent(formatKey)}`;
+  const response = await fetch(url);
+  const contentType = response.headers.get("Content-Type") || "";
+  if (!response.ok) {
+    const data = contentType.includes("application/json") ? await response.json() : {};
+    const message = data.error?.message || data.error || "导出失败。";
+    throw new Error(message);
+  }
+
+  const blob = await response.blob();
+  return {
+    blob,
+    filename: parseDownloadFilename(response.headers.get("Content-Disposition")) || buildExportFilename(formatKey),
+    contentType: response.headers.get("Content-Type") || "",
+  };
+}
+
+function validateExportResponse(formatKey, result) {
+  if (formatKey === "docx") {
+    return;
+  }
+
+  const requested = EXPORT_FORMATS[formatKey];
+  const returnedExt = getFilenameExtension(result.filename);
+  const returnedType = result.contentType.toLowerCase();
+  if (returnedExt === requested.extension) {
+    return;
+  }
+  if (returnedType.startsWith(requested.mime)) {
+    return;
+  }
+  if (returnedExt === "docx" || returnedType.includes("wordprocessingml")) {
+    throw new Error(`当前服务返回的仍是 Word 文件，说明 ${requested.label} 导出接口还未接入。`);
+  }
+}
+
+function parseDownloadFilename(contentDisposition) {
+  if (!contentDisposition) {
+    return "";
+  }
+
+  const encodedMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (encodedMatch) {
+    try {
+      return decodeURIComponent(encodedMatch[1]);
+    } catch (error) {
+      return encodedMatch[1];
+    }
+  }
+
+  const plainMatch = contentDisposition.match(/filename="([^"]+)"/i);
+  return plainMatch ? plainMatch[1] : "";
+}
+
+function getFilenameExtension(filename) {
+  const match = String(filename || "").toLowerCase().match(/\.([^.]+)$/);
+  return match ? match[1] : "";
 }
 
 function createId() {
