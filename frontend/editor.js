@@ -224,6 +224,7 @@ exportDocx.addEventListener("click", () => {
 });
 
 function render() {
+  ensureSelectedNode();
   renderOutline();
   renderInspector();
   renderNetwork();
@@ -278,8 +279,7 @@ function createOutlineList(nodes) {
     button.className = `outline-node ${node.id === state.selectedId ? "active" : ""}`;
     button.textContent = node.name;
     button.addEventListener("click", () => {
-      state.selectedId = node.id;
-      render();
+      selectNode(node.id);
     });
     item.appendChild(button);
 
@@ -294,7 +294,7 @@ function createOutlineList(nodes) {
 }
 
 function renderInspector() {
-  const selected = findNode(state.selectedId);
+  const selected = getSelectedNode();
   if (!selected) {
     nodeTitle.value = "";
     nodeNote.value = "";
@@ -310,7 +310,7 @@ function renderInspector() {
 }
 
 function renderNetwork() {
-  const selected = findNode(state.selectedId);
+  const selected = getSelectedNode();
   if (!selected) {
     networkCanvas.textContent = "请先从左侧目录中选择一个节点。";
     networkCanvas.classList.add("empty");
@@ -361,10 +361,33 @@ function createGraphNode(node, type) {
     <span>${node.children.length} 个下级</span>
   `;
   button.addEventListener("click", () => {
-    state.selectedId = node.id;
-    render();
+    selectNode(node.id);
   });
   return button;
+}
+
+// Keep outline clicks, graph clicks, and inspector rendering on one shared selection path.
+function selectNode(nodeId) {
+  if (!nodeId) {
+    return;
+  }
+  if (!findNode(nodeId)) {
+    return;
+  }
+  state.selectedId = nodeId;
+  render();
+}
+
+function getSelectedNode() {
+  ensureSelectedNode();
+  return findNode(state.selectedId);
+}
+
+function ensureSelectedNode() {
+  if (state.selectedId && findNode(state.selectedId)) {
+    return;
+  }
+  state.selectedId = state.tree[0]?.id || null;
 }
 
 function normalizeTree(nodes) {
@@ -510,7 +533,8 @@ async function loadProject(preferredSelectedId = state.selectedId) {
   const project = data.project;
   state.name = project.name || "folder-system";
   state.tree = normalizeTree(project.tree || []);
-  state.selectedId = findNode(preferredSelectedId)?.id || state.tree[0]?.id || null;
+  state.selectedId = preferredSelectedId;
+  ensureSelectedNode();
   editorSubtitle.textContent = `正在编辑：${state.name}`;
   render();
 }
