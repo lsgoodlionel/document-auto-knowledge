@@ -411,6 +411,7 @@ button:disabled {
   color: var(--text);
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(74, 61, 46, 0.1);
+  overflow-wrap: anywhere;
 }
 
 .outline-node.active {
@@ -422,7 +423,6 @@ button:disabled {
   color: rgba(255, 255, 255, 0.92);
   background: rgba(255, 255, 255, 0.18);
 }
-
 .tree-limit-note {
   margin: 14px 0 0;
   color: var(--muted);
