@@ -14,6 +14,7 @@ from backend import db
 from backend.server import ApiServer, content_disposition
 from backend.services.docx_exporter import build_docx
 from backend.services.docx_parser import DocxFolderParser
+from backend.services.exporters import ExporterError, export_project_file
 from backend.services import projects
 
 
@@ -101,6 +102,33 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertIn("filename*=UTF-8''", header)
         self.assertIn("%E5%AF%BC%E5%87%BA%E6%B5%8B%E8%AF%95.docx", header)
 
+    def test_multi_export_framework_outputs_expected_formats(self) -> None:
+        tree = sample_tree()
+
+        docx_export = export_project_file("导出测试", tree, "docx")
+        self.assertEqual(docx_export.filename, "导出测试.docx")
+        self.assertTrue(docx_export.data.startswith(b"PK"))
+
+        pdf_export = export_project_file("导出测试", tree, "pdf")
+        self.assertEqual(pdf_export.content_type, "application/pdf")
+        self.assertTrue(pdf_export.data.startswith(b"%PDF-1.4"))
+
+        mm_export = export_project_file("导出测试", tree, "mm")
+        self.assertEqual(mm_export.filename, "导出测试.mm")
+        self.assertIn(b"<map", mm_export.data)
+        self.assertIn("第一章".encode("utf-8"), mm_export.data)
+
+        png_export = export_project_file("导出测试", tree, "png")
+        self.assertEqual(png_export.content_type, "image/png")
+        self.assertEqual(png_export.data[:8], b"\x89PNG\r\n\x1a\n")
+
+    def test_multi_export_framework_rejects_unsupported_format(self) -> None:
+        with self.assertRaises(ExporterError) as context:
+            export_project_file("导出测试", sample_tree(), "svg")
+
+        self.assertEqual(context.exception.code, "unsupported_export_format")
+        self.assertIn("svg", context.exception.message)
+
 
 class HttpApiSmokeTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -129,6 +157,22 @@ class HttpApiSmokeTest(unittest.TestCase):
         data = response.read()
         connection.close()
         return response.status, json.loads(data.decode("utf-8"))
+
+    def request_binary(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, object] | None = None,
+    ) -> tuple[int, dict[str, str], bytes]:
+        connection = HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
+        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+        headers = {"Content-Type": "application/json"} if payload is not None else {}
+        connection.request(method, path, body=body, headers=headers)
+        response = connection.getresponse()
+        data = response.read()
+        response_headers = {key: value for key, value in response.getheaders()}
+        connection.close()
+        return response.status, response_headers, data
 
     def test_project_and_node_api_smoke(self) -> None:
         with db.connect() as conn:
@@ -170,6 +214,37 @@ class HttpApiSmokeTest(unittest.TestCase):
         status, payload = self.request("GET", "/api/missing")
         self.assertEqual(status, 404)
         self.assertEqual(payload, {"error": {"code": "not_found", "message": "API not found"}})
+
+    def test_export_endpoint_supports_multiple_formats(self) -> None:
+        with db.connect() as conn:
+            project_id = projects.create_project(conn, "导出接口")
+            projects.insert_tree(conn, project_id, None, sample_tree())
+            conn.commit()
+
+        status, headers, data = self.request_binary("GET", f"/api/projects/{project_id}/export")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        self.assertTrue(data.startswith(b"PK"))
+        self.assertIn("download.docx", headers["Content-Disposition"])
+
+        status, headers, data = self.request_binary("GET", f"/api/projects/{project_id}/export?format=pdf")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/pdf")
+        self.assertTrue(data.startswith(b"%PDF-1.4"))
+
+        status, headers, data = self.request_binary("GET", f"/api/projects/{project_id}/export?format=mm")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/x-freemind")
+        self.assertIn(b"<map", data)
+
+        status, headers, data = self.request_binary("GET", f"/api/projects/{project_id}/export?format=png")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "image/png")
+        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+
+        status, payload = self.request("GET", f"/api/projects/{project_id}/export?format=svg")
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "unsupported_export_format")
 
 
 class WordImportExportSmokeTest(unittest.TestCase):
@@ -256,6 +331,27 @@ def build_test_docx() -> bytes:
         for path, content in files.items():
             docx.writestr(path, content)
     return buffer.getvalue()
+
+
+def sample_tree() -> list[dict[str, object]]:
+    return [
+        {
+            "title": "第一章",
+            "note": "第一章正文第一段\n第一章正文第二段",
+            "children": [
+                {
+                    "title": "第一节",
+                    "note": "第一节正文",
+                    "children": [],
+                }
+            ],
+        },
+        {
+            "title": "第二章",
+            "note": "第二章正文",
+            "children": [],
+        },
+    ]
 
 
 if __name__ == "__main__":

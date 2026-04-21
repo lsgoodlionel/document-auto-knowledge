@@ -6,10 +6,11 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from .config import FRONTEND_DIR, HOST, MAX_UPLOAD_SIZE, PORT
 from .db import init_db
+from .services.exporters import ExporterError, export_project_file
 from .services import projects
 
 
@@ -36,6 +37,8 @@ def error_response(handler: BaseHTTPRequestHandler, status: int, code: str, mess
 
 def handle_api_error(handler: BaseHTTPRequestHandler, exc: Exception) -> None:
     if isinstance(exc, ApiError):
+        error_response(handler, exc.status, exc.code, exc.message)
+    elif isinstance(exc, ExporterError):
         error_response(handler, exc.status, exc.code, exc.message)
     elif isinstance(exc, KeyError):
         error_response(handler, HTTPStatus.NOT_FOUND, "not_found", str(exc).strip("'"))
@@ -64,10 +67,10 @@ def ascii_filename_fallback(filename: str) -> str:
     fallback = filename.encode("ascii", "ignore").decode("ascii")
     fallback = re.sub(r'[\r\n"\\;]', "_", fallback)
     fallback = re.sub(r"\s+", " ", fallback).strip()
+    extension = filename.rsplit(".", 1)[-1].encode("ascii", "ignore").decode("ascii") if "." in filename else ""
     if not fallback or fallback.startswith("."):
-        fallback = "download.docx" if filename.lower().endswith(".docx") else "download"
-    if "." not in fallback and "." in filename:
-        extension = filename.rsplit(".", 1)[-1].encode("ascii", "ignore").decode("ascii")
+        fallback = f"download.{extension}" if extension else "download"
+    if "." not in fallback and extension:
         if extension:
             fallback = f"{fallback}.{extension}"
     return fallback
@@ -75,12 +78,13 @@ def ascii_filename_fallback(filename: str) -> str:
 
 class ApiServer(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
         if path == "/api/projects":
             json_response(self, HTTPStatus.OK, {"projects": projects.list_projects()})
             return
         if path.startswith("/api/projects/") and path.endswith("/export"):
-            self._handle_export_docx(path)
+            self._handle_export(path, parsed_url.query)
             return
         if path.startswith("/api/projects/"):
             self._handle_get_project(path)
@@ -213,14 +217,18 @@ class ApiServer(BaseHTTPRequestHandler):
             return
         json_response(self, HTTPStatus.OK, {"node": node})
 
-    def _handle_export_docx(self, path: str) -> None:
+    def _handle_export(self, path: str, query: str) -> None:
         try:
             project_id = parse_id(path.split("/")[3], "project id")
-            filename, content = projects.export_project_docx(project_id)
+            format_name = parse_qs(query).get("format", ["docx"])[0] or "docx"
+            project = projects.get_project(project_id)
+
+            exported = export_project_file(project["name"], project["tree"], format_name)
+            filename, content_type, content = exported.filename, exported.content_type, exported.data
         except Exception as exc:
             handle_api_error(self, exc)
             return
-        binary_response(self, HTTPStatus.OK, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", content, filename)
+        binary_response(self, HTTPStatus.OK, content_type, content, filename)
 
     def _serve_frontend(self, path: str) -> None:
         if path == "/":
