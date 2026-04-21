@@ -4,6 +4,8 @@ V2.0 目标是在 V1.0 本地知识网络工具基础上，提升产品化、可
 
 V2.0 重大升级的并行拆分见 [docs/V2_PARALLEL_TASKS.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/V2_PARALLEL_TASKS.md:1)。
 
+最新一轮编辑器与导出增强需求，也继续在 [docs/V2_PARALLEL_TASKS.md](/Users/lionel/Documents/Codex/2026-04-20-word/docs/V2_PARALLEL_TASKS.md:1) 的 `V2.1` 段落中维护。
+
 ## 推荐启动方式
 
 新窗口接手后先创建 V2 分支：

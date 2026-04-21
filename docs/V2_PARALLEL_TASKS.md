@@ -254,3 +254,191 @@ git pull --ff-only origin main
 git merge --no-ff v2/integration
 git push origin main
 ```
+
+## V2.1 并行开发子任务
+
+下面这一组任务用于处理新一轮需求：
+
+1. 点击关系视图时，节点信息不能消失，目录总览和关系视图要统一显示同一份节点详情。
+2. 对没有层级定义的导入结果，允许在目录总览中重新定义、修改层级。
+3. 已导入的目录知识网络之间，允许手动建立新的上下级关系，例如把第二次导入的项目挂到第一次导入项目的某个子节点下。
+4. 打开知识网络后，导出升级为“导出文件”，格式可选：Word、PDF、FreeMind `.mm`、图片。
+
+### V2.1 统一规则
+
+- 本轮开发统一从 `v2-main` 或最新集成基线创建新分支。
+- 每个窗口只修改自己负责的文件范围。
+- 如果两个子任务都需要改 `frontend/editor.js`，必须控制在不同代码区域，并在提交说明里写明改动入口函数。
+- 所有新增导出格式都要有清晰的失败提示；如果当前只实现占位，也必须通过结构化错误返回。
+- 新增“跨项目挂接”功能前，不允许破坏现有单项目树的导入、编辑、导出流程。
+
+### 窗口 V2.1-A：编辑器视图状态统一
+
+建议分支：`v2.1/A-editor-view-sync`
+
+负责范围：
+
+- `frontend/editor.js`
+- `frontend/editor.html`
+- `frontend/styles.css`
+
+任务：
+
+- 修复点击“关系视图”时节点详情消失的问题。
+- 统一目录总览与关系视图的选中节点状态。
+- 无论从左侧目录树还是关系图点击节点，右侧详情区都显示同一节点信息。
+- 补充最小前端 smoke 验证思路或注释说明，确保后续不再回归。
+
+验收：
+
+- 从目录总览点击节点，详情区正常显示。
+- 切换到关系视图后，详情区仍显示当前节点。
+- 在关系视图中切换节点，详情区同步更新。
+
+### 窗口 V2.1-B：目录层级重定义
+
+建议分支：`v2.1/B-outline-relevel`
+
+负责范围：
+
+- `frontend/editor.js`
+- `frontend/editor.html`
+- `frontend/styles.css`
+- `backend/services/projects.py`
+- `backend/server.py`
+- `tests/`
+
+任务：
+
+- 在目录总览中允许对节点重新定义层级或修改层级。
+- 优先实现安全的“升级/降级/移到上级/移到下级”交互，而不是自由输入一个可能非法的 level。
+- 后端提供必要的节点重挂接或排序接口复用。
+- 修改后项目树刷新仍稳定，位置不乱。
+- 增加 smoke test，验证层级修改后导出和重新加载都正确。
+
+验收：
+
+- 没有预设级别的导入树可以手工整理成想要的层级。
+- 调整层级后，刷新项目仍保持结果。
+- 不会出现循环父子关系。
+
+### 窗口 V2.1-C：跨项目手动关联上下级
+
+建议分支：`v2.1/C-cross-project-linking`
+
+负责范围：
+
+- `backend/db.py`
+- `backend/services/projects.py`
+- `backend/server.py`
+- `frontend/editor.js`
+- `frontend/editor.html`
+- `tests/`
+
+任务：
+
+- 允许把一个项目树或某个项目根节点挂接到另一个项目节点下，形成组合型知识网络。
+- 先设计清楚数据模型：是直接移动节点跨项目，还是建立“引用/挂接关系”。
+- 默认要求保留来源项目标识，避免用户分不清节点来自哪个导入文件。
+- 提供选择目标父节点的交互入口。
+- 至少支持用户示例：把“囚徒的困境”挂到“中图法/社会科学/某子节点”下。
+
+验收：
+
+- 能在两个已导入项目之间建立新的上下级关系。
+- 原节点内容不丢失。
+- 刷新、重新打开、导出时结构仍存在。
+
+### 窗口 V2.1-D：多格式导出框架
+
+建议分支：`v2.1/D-multi-export`
+
+负责范围：
+
+- `backend/services/docx_exporter.py`
+- `backend/services/exporters.py`
+- `backend/services/projects.py`
+- `backend/server.py`
+- `tests/`
+
+任务：
+
+- 将原来的 Word 导出升级为统一导出框架。
+- 导出格式至少支持：Word、PDF、FreeMind `.mm`、图片。
+- 如果 PDF/图片当前只能实现基础版本，也要先提供稳定可下载结果。
+- 服务端导出接口支持格式参数，例如 `format=docx/pdf/mm/png`。
+- 为每种格式补最小 smoke test。
+
+验收：
+
+- 旧的 Word 导出仍可用。
+- 新接口可按格式返回对应文件。
+- 不支持时返回结构化错误而不是 500。
+
+### 窗口 V2.1-E：编辑器导出面板和格式选择
+
+建议分支：`v2.1/E-export-ui`
+
+负责范围：
+
+- `frontend/editor.js`
+- `frontend/editor.html`
+- `frontend/styles.css`
+
+任务：
+
+- 把“导出新 Word”升级为“导出文件”面板。
+- 用户可选择导出格式：Word、PDF、MM、图片。
+- 点击导出时调用新的后端导出接口。
+- 错误提示、加载状态和文件名展示清晰。
+- 不要破坏现有节点编辑与关系图交互。
+
+验收：
+
+- 用户可以在编辑器里切换导出格式。
+- 至少 Word 路径保持稳定可用。
+- 新增格式失败时能看到明确提示。
+
+### V2.1 集成窗口操作说明
+
+所有子任务完成后，在本窗口或新建集成窗口执行：
+
+```bash
+cd /Users/lionel/Documents/Codex/2026-04-20-word
+git fetch origin
+git switch v2-main
+git pull --ff-only origin v2-main
+git switch -c v2.1/integration
+```
+
+按依赖顺序合并：
+
+```bash
+git merge --no-ff v2.1/A-editor-view-sync
+git merge --no-ff v2.1/B-outline-relevel
+git merge --no-ff v2.1/C-cross-project-linking
+git merge --no-ff v2.1/D-multi-export
+git merge --no-ff v2.1/E-export-ui
+```
+
+每次合并后运行：
+
+```bash
+PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m py_compile run.py backend/server.py backend/db.py backend/config.py backend/services/docx_parser.py backend/services/docx_exporter.py backend/services/projects.py tests/smoke_api.py build_release.py scripts/context_snapshot.py
+python3 -m unittest tests.smoke_api
+node --check frontend/app.js
+node --check frontend/editor.js
+git diff --check
+```
+
+最后做浏览器验收：
+
+```bash
+PORT=8001 python3 run.py
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:8001
+```
