@@ -34,6 +34,8 @@ def create_project_from_import(imported: ImportResult) -> dict[str, Any]:
     project["headings"] = imported.headings
     project["sourceType"] = imported.source_type
     project["metadata"] = imported.metadata
+    project["importWarnings"] = imported.warnings
+    project["importMetadata"] = imported.metadata
     return project
 
 
@@ -319,13 +321,13 @@ def count_siblings(
     conn: sqlite3.Connection,
     project_id: int,
     parent_id: int | None,
+    *,
     exclude_node_id: int | None = None,
 ) -> int:
     if parent_id is None:
         row = conn.execute(
             """
-            SELECT COUNT(*) AS count
-            FROM nodes
+            SELECT COUNT(*) AS total FROM nodes
             WHERE project_id = ? AND parent_id IS NULL AND (? IS NULL OR id != ?)
             """,
             (project_id, exclude_node_id, exclude_node_id),
@@ -333,23 +335,18 @@ def count_siblings(
     else:
         row = conn.execute(
             """
-            SELECT COUNT(*) AS count
-            FROM nodes
+            SELECT COUNT(*) AS total FROM nodes
             WHERE project_id = ? AND parent_id = ? AND (? IS NULL OR id != ?)
             """,
             (project_id, parent_id, exclude_node_id, exclude_node_id),
         ).fetchone()
-    return int(row["count"])
+    return int(row["total"])
 
 
 def clamp_position(position: int | None, sibling_count: int) -> int:
     if position is None:
         return sibling_count
-    try:
-        parsed = int(position)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("position must be an integer") from exc
-    return max(0, min(parsed, sibling_count))
+    return max(0, min(int(position), sibling_count))
 
 
 def normalize_positions(conn: sqlite3.Connection, project_id: int, parent_id: int | None) -> None:
@@ -357,7 +354,7 @@ def normalize_positions(conn: sqlite3.Connection, project_id: int, parent_id: in
         rows = conn.execute(
             """
             SELECT id FROM nodes
-            WHERE project_id = ? AND parent_id IS NULL AND position >= 0
+            WHERE project_id = ? AND parent_id IS NULL
             ORDER BY position, id
             """,
             (project_id,),
@@ -366,7 +363,7 @@ def normalize_positions(conn: sqlite3.Connection, project_id: int, parent_id: in
         rows = conn.execute(
             """
             SELECT id FROM nodes
-            WHERE project_id = ? AND parent_id = ? AND position >= 0
+            WHERE project_id = ? AND parent_id = ?
             ORDER BY position, id
             """,
             (project_id, parent_id),
@@ -374,8 +371,3 @@ def normalize_positions(conn: sqlite3.Connection, project_id: int, parent_id: in
 
     for position, row in enumerate(rows):
         conn.execute("UPDATE nodes SET position = ? WHERE id = ?", (position, row["id"]))
-
-
-def export_project_docx(project_id: int) -> tuple[str, bytes]:
-    project = get_project(project_id)
-    return f"{sanitize_name(project['name'])}.docx", build_docx(project["name"], project["tree"])

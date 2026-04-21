@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import base64
+import json
 import sqlite3
 import tempfile
 import threading
@@ -14,9 +14,9 @@ from pathlib import Path
 
 from backend import db
 from backend.server import ApiServer, content_disposition
+from backend.services import projects
 from backend.services.docx_exporter import build_docx
 from backend.services.docx_parser import DocxFolderParser
-from backend.services import projects
 from backend.services.importers import import_file, registry
 
 
@@ -86,6 +86,30 @@ class BackendApiSmokeTest(unittest.TestCase):
         imported = import_file("again.docx", build_test_docx())
         self.assertEqual(imported.source_type, "docx")
         self.assertEqual(imported.tree[0].source_type, "docx")
+
+    def test_pdf_import_builds_tree_from_selectable_text(self) -> None:
+        payload = base64.b64encode(build_test_pdf()).decode("ascii")
+        project = projects.create_project_from_upload("PDF 导入测试.pdf", payload)
+
+        self.assertEqual(project["name"], "PDF 导入测试")
+        self.assertEqual(project["sourceType"], "pdf")
+        self.assertIn(".pdf", registry.supported_extensions())
+        self.assertEqual(project["tree"][0]["title"], "1 Project Overview")
+        self.assertIn("Project body paragraph", project["tree"][0]["note"])
+        self.assertEqual(project["tree"][0]["children"][0]["title"], "1.1 Scope")
+        self.assertEqual(project["headings"][0]["source"], "pdf-text")
+
+    def test_image_import_creates_source_node_with_ocr_warning(self) -> None:
+        payload = base64.b64encode(MINIMAL_PNG).decode("ascii")
+        project = projects.create_project_from_upload("图片导入.png", payload)
+
+        self.assertEqual(project["name"], "图片导入")
+        self.assertEqual(project["sourceType"], "image")
+        self.assertIn(".png", registry.supported_extensions())
+        self.assertEqual(project["tree"][0]["title"], "图片导入")
+        self.assertIn("Source image: 图片导入.png", project["tree"][0]["note"])
+        self.assertIn("OCR is not configured", project["tree"][0]["note"])
+        self.assertEqual(project["importWarnings"][0]["code"], "ocr_unavailable")
 
     def test_init_db_adds_import_columns_to_existing_nodes_table(self) -> None:
         legacy_db_path = Path(self.tmpdir.name) / "legacy.sqlite3"
@@ -251,10 +275,26 @@ class HttpApiSmokeTest(unittest.TestCase):
         status, payload = self.request(
             "POST",
             "/api/projects/import",
-            {"filename": "unsupported.pdf", "file": encoded_docx},
+            {"filename": "接口 PDF.pdf", "file": base64.b64encode(build_test_pdf()).decode("ascii")},
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["project"]["tree"][0]["title"], "1 Project Overview")
+
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import",
+            {"filename": "接口图片.png", "file": base64.b64encode(MINIMAL_PNG).decode("ascii")},
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["project"]["importWarnings"][0]["code"], "ocr_unavailable")
+
+        status, payload = self.request(
+            "POST",
+            "/api/projects/import",
+            {"filename": "坏文件.pdf", "file": base64.b64encode(build_test_docx()).decode("ascii")},
         )
         self.assertEqual(status, 400)
-        self.assertEqual(payload["error"]["code"], "unsupported_import_type")
+        self.assertEqual(payload["error"]["code"], "invalid_pdf")
 
 
 class WordImportExportSmokeTest(unittest.TestCase):
@@ -317,31 +357,97 @@ def build_test_docx() -> bytes:
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>""",
-        "word/styles.xml": """<?xml version="1.0" encoding="UTF-8"?>
-<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:style w:type="paragraph" w:styleId="cnHeading1"><w:name w:val="标题 1"/></w:style>
-  <w:style w:type="paragraph" w:styleId="cnHeading2"><w:name w:val="标题 2"/></w:style>
-</w:styles>""",
         "word/document.xml": """<?xml version="1.0" encoding="UTF-8"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>
-    <w:p><w:pPr><w:pStyle w:val="cnHeading1"/></w:pPr><w:r><w:t>第一章</w:t></w:r></w:p>
+    <w:p>
+      <w:pPr><w:pStyle w:val="标题 1"/></w:pPr>
+      <w:r><w:t>第一章</w:t></w:r>
+    </w:p>
     <w:p><w:r><w:t>第一章正文第一段</w:t></w:r></w:p>
     <w:p><w:r><w:t>第一章正文第二段</w:t></w:r></w:p>
-    <w:p><w:pPr><w:pStyle w:val="cnHeading2"/></w:pPr><w:r><w:t>第一节</w:t></w:r></w:p>
+    <w:p>
+      <w:pPr><w:pStyle w:val="Heading2"/></w:pPr>
+      <w:r><w:t>第一节</w:t></w:r>
+    </w:p>
     <w:p><w:r><w:t>第一节正文</w:t></w:r></w:p>
-    <w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:t>大纲标题</w:t></w:r></w:p>
+    <w:p>
+      <w:pPr><w:outlineLvl w:val="0"/></w:pPr>
+      <w:r><w:t>大纲标题</w:t></w:r>
+    </w:p>
     <w:p><w:r><w:t>大纲标题正文</w:t></w:r></w:p>
     <w:sectPr/>
   </w:body>
 </w:document>""",
+        "word/styles.xml": """<?xml version="1.0" encoding="UTF-8"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="标题 1"><w:name w:val="标题 1"/></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/></w:style>
+</w:styles>""",
     }
+    return build_zip(files)
+
+
+def build_test_pdf() -> bytes:
+    stream_text = "\n".join(
+        [
+            "BT",
+            "/F1 18 Tf",
+            "72 720 Td",
+            "(1 Project Overview) Tj",
+            "0 -24 Td",
+            "(Project body paragraph) Tj",
+            "0 -24 Td",
+            "(1.1 Scope) Tj",
+            "0 -24 Td",
+            "(Scope detail line) Tj",
+            "ET",
+        ]
+    ).encode("latin-1")
+    objects = [
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R >>\nendobj\n",
+        (
+            b"4 0 obj\n<< /Length "
+            + str(len(stream_text)).encode("ascii")
+            + b" >>\nstream\n"
+            + stream_text
+            + b"\nendstream\nendobj\n"
+        ),
+    ]
+
+    pdf = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = [0]
+    for obj in objects:
+        offsets.append(len(pdf))
+        pdf.extend(obj)
+
+    xref_offset = len(pdf)
+    pdf.extend(f"xref\n0 {len(offsets)}\n".encode("ascii"))
+    pdf.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        pdf.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    pdf.extend(
+        (
+            "trailer\n"
+            f"<< /Size {len(offsets)} /Root 1 0 R >>\n"
+            "startxref\n"
+            f"{xref_offset}\n"
+            "%%EOF\n"
+        ).encode("ascii")
+    )
+    return bytes(pdf)
+
+
+MINIMAL_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9sX8x7EAAAAASUVORK5CYII="
+)
+
+
+def build_zip(files: dict[str, str]) -> bytes:
     buffer = BytesIO()
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as docx:
-        for path, content in files.items():
-            docx.writestr(path, content)
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, content in files.items():
+            archive.writestr(name, content)
     return buffer.getvalue()
-
-
-if __name__ == "__main__":
-    unittest.main()

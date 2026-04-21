@@ -4,8 +4,11 @@
 
 ## 当前能力
 
-- 上传 `.docx` 文档
+- 上传 `.docx`、`.pdf`、`.png`、`.jpg`、`.jpeg` 文档或图片
 - 识别 Word 标题样式和段落大纲级别
+- 从带可选中文本的 PDF 中提取文本，并按标题线索生成层级
+- 图片可作为带来源信息的单节点项目导入
+- OCR 入口已预留；未配置 OCR 依赖时会返回明确提示
 - 生成目录树和知识网络
 - 节点可维护标题、上下级关系和说明文本
 - 可反向导出新的 Word 文档
@@ -83,6 +86,7 @@ PORT=8001 ./start.sh
 ## API 概览
 
 - `GET /api/projects`
+- `POST /api/projects/import`
 - `POST /api/projects/import-docx`
 - `GET /api/projects/{id}`
 - `PUT /api/projects/{id}`

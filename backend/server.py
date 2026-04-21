@@ -12,6 +12,7 @@ from .config import FRONTEND_DIR, HOST, MAX_UPLOAD_SIZE, PORT
 from .db import init_db
 from .services.importers import ImporterError
 from .services import projects
+from .services.importers import ImporterError
 
 
 class ApiError(Exception):

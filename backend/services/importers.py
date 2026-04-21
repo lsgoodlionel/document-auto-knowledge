@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .docx_parser import DocxFolderParser, sanitize_name
+from .image_parser import ImageParser, is_supported_image
+from .pdf_parser import PdfParser, PdfParserError
 
 
 class ImporterError(ValueError):
@@ -45,6 +47,7 @@ class ImportResult:
     source_type: str
     tree: list[ImportNode]
     headings: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[dict[str, str]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def tree_as_dicts(self) -> list[dict[str, Any]]:
@@ -124,6 +127,78 @@ class DocxImporter:
         )
 
 
+class PdfImporter:
+    source_type = "pdf"
+    extensions = (".pdf",)
+
+    def parse(self, filename: str, content: bytes) -> ImportResult:
+        try:
+            parsed = PdfParser().parse(content)
+        except PdfParserError as exc:
+            raise ImporterError(HTTPStatus.BAD_REQUEST, exc.code, exc.message) from exc
+        return ImportResult(
+            title=project_title_from_filename(filename),
+            source_type=self.source_type,
+            tree=[self._node_from_dict(node) for node in parsed["tree"]],
+            headings=[
+                {
+                    **heading,
+                    "source_type": self.source_type,
+                    "metadata": {"source": heading.get("source")},
+                }
+                for heading in parsed["headings"]
+            ],
+            warnings=parsed.get("warnings", []),
+            metadata={"filename": filename, "format": self.source_type, "pages": parsed.get("pages")},
+        )
+
+    def _node_from_dict(self, node: dict[str, Any]) -> ImportNode:
+        return ImportNode(
+            title=sanitize_name(node.get("title") or node.get("name") or "untitled"),
+            level=max(1, int(node.get("level") or 1)),
+            note=node.get("note", ""),
+            children=[self._node_from_dict(child) for child in node.get("children", [])],
+            source_type=self.source_type,
+            metadata={"source_parser": "PdfParser"},
+        )
+
+
+class ImageImporter:
+    source_type = "image"
+    extensions = tuple(sorted(is_supported for is_supported in [".png", ".jpg", ".jpeg"]))
+
+    def __init__(self, parser: ImageParser | None = None) -> None:
+        self.parser = parser or ImageParser()
+
+    def parse(self, filename: str, content: bytes) -> ImportResult:
+        parsed = self.parser.parse(filename, content)
+        return ImportResult(
+            title=project_title_from_filename(filename),
+            source_type=self.source_type,
+            tree=[self._node_from_dict(node) for node in parsed["tree"]],
+            headings=[
+                {
+                    **heading,
+                    "source_type": self.source_type,
+                    "metadata": {"source": heading.get("source")},
+                }
+                for heading in parsed["headings"]
+            ],
+            warnings=parsed.get("warnings", []),
+            metadata={"filename": filename, "format": self.source_type, **parsed.get("metadata", {})},
+        )
+
+    def _node_from_dict(self, node: dict[str, Any]) -> ImportNode:
+        return ImportNode(
+            title=sanitize_name(node.get("title") or node.get("name") or "untitled"),
+            level=max(1, int(node.get("level") or 1)),
+            note=node.get("note", ""),
+            children=[self._node_from_dict(child) for child in node.get("children", [])],
+            source_type=self.source_type,
+            metadata={"source_parser": "ImageParser"},
+        )
+
+
 def normalize_extension(extension: str) -> str:
     if not extension:
         return ""
@@ -147,6 +222,8 @@ def project_title_from_filename(filename: str) -> str:
 
 registry = ImporterRegistry()
 registry.register(DocxImporter())
+registry.register(PdfImporter())
+registry.register(ImageImporter())
 
 
 def import_file(filename: str, content: bytes) -> ImportResult:
