@@ -8,6 +8,8 @@ const state = {
   selectedId: null,
   apiMode: false,
   busy: false,
+  availableProjects: [],
+  sourceProjectTree: [],
 };
 
 const outlineTree = document.querySelector("#outline-tree");
@@ -26,6 +28,11 @@ const deleteNode = document.querySelector("#delete-node");
 const exportDocx = document.querySelector("#export-docx");
 const editorSubtitle = document.querySelector("#editor-subtitle");
 const returnHome = document.querySelector("#return-home");
+const linkTargetLabel = document.querySelector("#link-target-label");
+const linkSourceProject = document.querySelector("#link-source-project");
+const linkSourceRoot = document.querySelector("#link-source-root");
+const attachProjectLink = document.querySelector("#attach-project-link");
+const linkingHint = document.querySelector("#linking-hint");
 
 boot();
 
@@ -101,6 +108,45 @@ saveNode.addEventListener("click", async () => {
   selected.title = title;
   selected.note = note;
   render();
+});
+
+linkSourceProject.addEventListener("change", async () => {
+  await runEditorAction(async () => {
+    await loadSourceProjectTree(linkSourceProject.value);
+  });
+});
+
+attachProjectLink.addEventListener("click", async () => {
+  if (!state.apiMode || !state.projectId) {
+    return;
+  }
+
+  const sourceProjectId = Number(linkSourceProject.value);
+  if (!sourceProjectId) {
+    editorSubtitle.textContent = "请先选择来源项目。";
+    return;
+  }
+
+  const sourceRootValue = linkSourceRoot.value;
+  const targetParentId = state.selectedId || null;
+  const sourceRootNodeId = sourceRootValue ? Number(sourceRootValue) : null;
+
+  await runEditorAction(async () => {
+    const data = await apiRequest(`/api/projects/${state.projectId}/attachments`, {
+      method: "POST",
+      body: {
+        targetParentId,
+        sourceProjectId,
+        sourceRootNodeId,
+      },
+    });
+    state.name = data.project.name || state.name;
+    state.tree = normalizeTree(data.project.tree || []);
+    state.selectedId = targetParentId || state.tree[0]?.id || null;
+    editorSubtitle.textContent = "跨项目挂接已保存。";
+    await loadAvailableProjects();
+    await loadSourceProjectTree(linkSourceProject.value);
+  });
 });
 
 addChild.addEventListener("click", async () => {
@@ -245,6 +291,8 @@ function renderEmptyState(message = "当前没有可编辑的知识网络，请�
   selectionSummary.textContent = "当前未选择节点。";
   selectionSummary.classList.add("empty");
   toggleEditor(false);
+  linkTargetLabel.textContent = "挂接到当前节点";
+  linkingHint.textContent = "把另一个已导入项目的根节点复制挂接到当前选中节点下，并保留来源项目标识。";
 }
 
 function toggleEditor(enabled) {
@@ -256,6 +304,9 @@ function toggleEditor(enabled) {
   addSibling.disabled = disabled;
   deleteNode.disabled = disabled;
   exportDocx.disabled = disabled;
+  linkSourceProject.disabled = disabled || !state.apiMode;
+  linkSourceRoot.disabled = disabled || !state.apiMode;
+  attachProjectLink.disabled = disabled || !state.apiMode;
 }
 
 function renderOutline() {
@@ -280,7 +331,7 @@ function createOutlineList(nodes) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `outline-node ${node.id === state.selectedId ? "active" : ""}`;
-    button.textContent = node.name;
+    button.textContent = formatNodeLabel(node);
     button.setAttribute("aria-current", node.id === state.selectedId ? "true" : "false");
     button.addEventListener("click", () => {
       selectNode(node.id);
@@ -303,11 +354,18 @@ function renderInspector() {
     nodeTitle.value = "";
     nodeNote.value = "";
     renderSelectedNodeDetails(null);
+    linkTargetLabel.textContent = "挂接到项目根级";
+    linkingHint.textContent = "当前未选择节点，挂接时会追加到项目根级。";
     return;
   }
 
   nodeTitle.value = selected.name;
   nodeNote.value = selected.note || "";
+  renderSelectedNodeDetails(selected);
+  linkTargetLabel.textContent = `挂接到：${selected.name}`;
+  linkingHint.textContent = selected.linkedCopy && selected.sourceProjectName
+    ? `当前节点来自 ${selected.sourceProjectName}，仍可继续作为挂接目标。`
+    : "把另一个已导入项目的根节点复制挂接到当前选中节点下，并保留来源项目标识。";
   renderSelectedNodeDetails(selected);
 }
 
@@ -362,7 +420,7 @@ function createGraphNode(node, type) {
   button.className = `graph-node ${type}`;
   button.setAttribute("aria-pressed", node.id === state.selectedId ? "true" : "false");
   button.innerHTML = `
-    <strong>${escapeHtml(node.name)}</strong>
+    <strong>${escapeHtml(formatNodeLabel(node))}</strong>
     <span>${node.children.length} 个下级</span>
   `;
   button.addEventListener("click", () => {
@@ -428,6 +486,10 @@ function normalizeNode(node) {
     name,
     title: name,
     note: node.note || "",
+    sourceProjectId: node.sourceProjectId ?? node.source_project_id ?? null,
+    sourceProjectName: node.sourceProjectName || null,
+    sourceNodeId: node.sourceNodeId ?? node.source_node_id ?? null,
+    linkedCopy: Boolean(node.linkedCopy),
     position: Number.isInteger(node.position) ? node.position : 0,
     children: normalizeTree(node.children || []),
   };
@@ -560,6 +622,8 @@ async function loadProject(preferredSelectedId = state.selectedId) {
   state.tree = normalizeTree(project.tree || []);
   state.selectedId = preferredSelectedId;
   ensureSelectedNode();
+  await loadAvailableProjects();
+  await loadAvailableProjects();
   editorSubtitle.textContent = `正在编辑：${state.name}`;
   render();
 }
@@ -615,6 +679,78 @@ async function findProjectIdByName(name) {
   } catch (error) {
     return null;
   }
+}
+
+async function loadAvailableProjects() {
+  if (!state.apiMode) {
+    state.availableProjects = [];
+    renderLinkSourceProjectOptions();
+    return;
+  }
+
+  try {
+    const data = await apiRequest("/api/projects");
+    state.availableProjects = (data.projects || []).filter((project) => project.id !== state.projectId);
+  } catch (error) {
+    state.availableProjects = [];
+  }
+  renderLinkSourceProjectOptions();
+}
+
+async function loadSourceProjectTree(projectId) {
+  const parsedId = Number(projectId);
+  if (!parsedId) {
+    state.sourceProjectTree = [];
+    renderLinkSourceRootOptions();
+    return;
+  }
+
+  const data = await apiRequest(`/api/projects/${parsedId}`);
+  state.sourceProjectTree = normalizeTree(data.project.tree || []);
+  renderLinkSourceRootOptions();
+}
+
+function renderLinkSourceProjectOptions() {
+  const currentValue = linkSourceProject.value;
+  linkSourceProject.innerHTML = '<option value="">请选择来源项目</option>';
+  state.availableProjects.forEach((project) => {
+    const option = document.createElement("option");
+    option.value = String(project.id);
+    option.textContent = project.name;
+    linkSourceProject.appendChild(option);
+  });
+  if (state.availableProjects.some((project) => String(project.id) === currentValue)) {
+    linkSourceProject.value = currentValue;
+  } else {
+    linkSourceProject.value = "";
+  }
+  if (!linkSourceProject.value) {
+    state.sourceProjectTree = [];
+  }
+  renderLinkSourceRootOptions();
+}
+
+function renderLinkSourceRootOptions() {
+  const currentValue = linkSourceRoot.value;
+  linkSourceRoot.innerHTML = '<option value="">整个来源项目</option>';
+  state.sourceProjectTree.forEach((node) => {
+    const option = document.createElement("option");
+    option.value = String(node.id);
+    option.textContent = node.name;
+    linkSourceRoot.appendChild(option);
+  });
+  if (state.sourceProjectTree.some((node) => String(node.id) === currentValue)) {
+    linkSourceRoot.value = currentValue;
+  } else {
+    linkSourceRoot.value = "";
+  }
+}
+
+function formatNodeLabel(node) {
+  if (node.linkedCopy && node.sourceProjectName) {
+    return `${node.name} [来自 ${node.sourceProjectName}]`;
+  }
+  return node.name;
 }
 
 function applyNodePatch(target, patch) {

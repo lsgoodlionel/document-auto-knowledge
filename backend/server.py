@@ -95,6 +95,9 @@ class ApiServer(BaseHTTPRequestHandler):
         if path == "/api/projects/import-docx":
             self._handle_import_docx()
             return
+        if path.startswith("/api/projects/") and path.endswith("/attachments"):
+            self._handle_attach_project_subtree(path)
+            return
         if path.startswith("/api/projects/") and path.endswith("/nodes"):
             self._handle_create_node(path)
             return
@@ -183,6 +186,22 @@ class ApiServer(BaseHTTPRequestHandler):
             handle_api_error(self, exc)
             return
         json_response(self, HTTPStatus.CREATED, {"node": node})
+
+    def _handle_attach_project_subtree(self, path: str) -> None:
+        try:
+            project_id = parse_id(path.split("/")[3], "project id")
+            payload = self._read_json()
+            source_root_node_id = payload.get("sourceRootNodeId")
+            project = projects.attach_project_subtree(
+                project_id,
+                payload.get("targetParentId"),
+                parse_id(str(payload.get("sourceProjectId")), "source project id"),
+                parse_id(str(source_root_node_id), "source root node id") if source_root_node_id is not None else None,
+            )
+        except Exception as exc:
+            handle_api_error(self, exc)
+            return
+        json_response(self, HTTPStatus.OK, {"project": project})
 
     def _handle_update_node(self, path: str) -> None:
         try:

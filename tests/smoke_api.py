@@ -62,6 +62,54 @@ class BackendApiSmokeTest(unittest.TestCase):
         with self.assertRaises(KeyError):
             projects.get_project(project_id)
 
+    def test_attach_root_node_from_another_project_preserves_source_identity(self) -> None:
+        with db.connect() as conn:
+            target_project_id = projects.create_project(conn, "中图法")
+            source_project_id = projects.create_project(conn, "囚徒的困境")
+            conn.commit()
+
+        social = projects.create_node(target_project_id, None, "社会科学")
+        target_parent = projects.create_node(target_project_id, social["id"], "博弈论")
+        source_root = projects.create_node(source_project_id, None, "囚徒的困境", "冲突与合作")
+        source_child = projects.create_node(source_project_id, source_root["id"], "重复博弈", "长期关系")
+
+        attached_project = projects.attach_project_subtree(
+            target_project_id,
+            target_parent["id"],
+            source_project_id,
+            source_root["id"],
+        )
+
+        attached_root = attached_project["tree"][0]["children"][0]["children"][0]
+        self.assertEqual(attached_root["title"], "囚徒的困境")
+        self.assertEqual(attached_root["note"], "冲突与合作")
+        self.assertEqual(attached_root["sourceProjectId"], source_project_id)
+        self.assertEqual(attached_root["sourceProjectName"], "囚徒的困境")
+        self.assertEqual(attached_root["sourceNodeId"], source_root["id"])
+        self.assertTrue(attached_root["linkedCopy"])
+        self.assertEqual(attached_root["children"][0]["title"], "重复博弈")
+        self.assertEqual(attached_root["children"][0]["sourceNodeId"], source_child["id"])
+
+        source_project = projects.get_project(source_project_id)
+        self.assertEqual(source_project["tree"][0]["title"], "囚徒的困境")
+        self.assertEqual(source_project["tree"][0]["children"][0]["title"], "重复博弈")
+
+    def test_attach_whole_project_adds_all_source_roots(self) -> None:
+        with db.connect() as conn:
+            target_project_id = projects.create_project(conn, "中图法")
+            source_project_id = projects.create_project(conn, "社会科学案例")
+            conn.commit()
+
+        target_parent = projects.create_node(target_project_id, None, "社会科学")
+        first_root = projects.create_node(source_project_id, None, "囚徒的困境")
+        second_root = projects.create_node(source_project_id, None, "公共选择")
+
+        attached_project = projects.attach_project_subtree(target_project_id, target_parent["id"], source_project_id)
+        attached_titles = [node["title"] for node in attached_project["tree"][0]["children"]]
+        self.assertEqual(attached_titles, ["囚徒的困境", "公共选择"])
+        self.assertEqual(attached_project["tree"][0]["children"][0]["sourceNodeId"], first_root["id"])
+        self.assertEqual(attached_project["tree"][0]["children"][1]["sourceNodeId"], second_root["id"])
+
     def test_error_payload_shape(self) -> None:
         from backend.server import error_response
 
@@ -170,6 +218,43 @@ class HttpApiSmokeTest(unittest.TestCase):
         status, payload = self.request("GET", "/api/missing")
         self.assertEqual(status, 404)
         self.assertEqual(payload, {"error": {"code": "not_found", "message": "API not found"}})
+
+    def test_cross_project_attachment_api(self) -> None:
+        with db.connect() as conn:
+            target_project_id = projects.create_project(conn, "中图法")
+            source_project_id = projects.create_project(conn, "囚徒的困境")
+            conn.commit()
+
+        target_parent = projects.create_node(target_project_id, None, "社会科学")
+        source_root = projects.create_node(source_project_id, None, "囚徒的困境", "合作困境")
+        projects.create_node(source_project_id, source_root["id"], "纳什均衡", "均衡说明")
+
+        status, payload = self.request(
+            "POST",
+            f"/api/projects/{target_project_id}/attachments",
+            {
+                "targetParentId": target_parent["id"],
+                "sourceProjectId": source_project_id,
+                "sourceRootNodeId": source_root["id"],
+            },
+        )
+        self.assertEqual(status, 200)
+        attached_root = payload["project"]["tree"][0]["children"][0]
+        self.assertEqual(attached_root["title"], "囚徒的困境")
+        self.assertEqual(attached_root["sourceProjectId"], source_project_id)
+        self.assertEqual(attached_root["sourceProjectName"], "囚徒的困境")
+        self.assertTrue(attached_root["linkedCopy"])
+
+        status, payload = self.request(
+            "POST",
+            f"/api/projects/{target_project_id}/attachments",
+            {
+                "targetParentId": target_parent["id"],
+                "sourceProjectId": target_project_id,
+            },
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "bad_request")
 
 
 class WordImportExportSmokeTest(unittest.TestCase):
