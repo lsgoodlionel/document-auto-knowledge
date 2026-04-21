@@ -26,6 +26,7 @@ const focusLabel = document.querySelector("#focus-label");
 const selectionPath = document.querySelector("#selection-path");
 const nodeTitle = document.querySelector("#node-title");
 const nodeNote = document.querySelector("#node-note");
+const noteStatus = document.querySelector("#note-status");
 const saveNode = document.querySelector("#save-node");
 const addChild = document.querySelector("#add-child");
 const addSibling = document.querySelector("#add-sibling");
@@ -35,6 +36,10 @@ const editorSubtitle = document.querySelector("#editor-subtitle");
 const returnHome = document.querySelector("#return-home");
 
 boot();
+
+nodeNote.addEventListener("input", () => {
+  updateNoteStatus({ note: nodeNote.value });
+});
 
 returnHome.addEventListener("click", (event) => {
   event.preventDefault();
@@ -92,7 +97,7 @@ saveNode.addEventListener("click", async () => {
   }
 
   const title = sanitizeName(nodeTitle.value) || "untitled";
-  const note = nodeNote.value.trim();
+  const note = normalizeNoteInput(nodeNote.value);
 
   if (state.apiMode) {
     await runEditorAction(async () => {
@@ -377,6 +382,7 @@ function renderInspector() {
   if (!selected) {
     nodeTitle.value = "";
     nodeNote.value = "";
+    updateNoteStatus(null);
     focusLabel.textContent = "未选择节点";
     selectionPath.textContent = "暂无路径";
     return;
@@ -384,6 +390,7 @@ function renderInspector() {
 
   nodeTitle.value = selected.name;
   nodeNote.value = selected.note || "";
+  updateNoteStatus(selected);
   focusLabel.textContent = selected.name;
   selectionPath.textContent = buildPath(selected.id).join(" / ");
 }
@@ -796,6 +803,25 @@ function sanitizeName(name) {
   return cleaned || "untitled";
 }
 
+function normalizeNoteInput(note) {
+  return String(note).replace(/\r\n?/g, "\n");
+}
+
+function updateNoteStatus(node) {
+  if (!noteStatus) {
+    return;
+  }
+
+  if (!node) {
+    noteStatus.textContent = "未选择节点";
+    return;
+  }
+
+  const note = node.note || "";
+  const lines = note ? note.split("\n").length : 0;
+  noteStatus.textContent = note ? `${note.length} 字，${lines} 行正文` : "当前节点还没有正文";
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -815,9 +841,8 @@ function flattenToWordParagraphs(nodes, depth = 1, paragraphs = []) {
 
     if (node.note) {
       node.note
-        .split(/\n+/)
-        .map((line) => line.trim())
-        .filter(Boolean)
+        .split(/\r?\n/)
+        .filter((line) => line.trim())
         .forEach((line) => {
           paragraphs.push({
             type: "text",

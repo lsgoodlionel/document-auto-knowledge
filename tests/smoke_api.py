@@ -426,6 +426,58 @@ class WordImportExportSmokeTest(unittest.TestCase):
         self.assertEqual(round_trip[0]["children"][0]["name"], "第一节")
         self.assertEqual(round_trip[0]["children"][0]["note"], "第一节正文")
 
+    def test_export_keeps_note_under_matching_heading(self) -> None:
+        export_tree = [
+            {
+                "title": "一级节点",
+                "note": "一级正文第一段\n一级正文第二段",
+                "children": [
+                    {
+                        "title": "二级节点",
+                        "note": "二级正文",
+                        "children": [],
+                    }
+                ],
+            },
+            {
+                "title": "另一个一级节点",
+                "note": "另一个正文",
+                "children": [],
+            },
+        ]
+
+        round_trip = DocxFolderParser().parse(build_docx("导出正文测试", export_tree))["tree"]
+
+        self.assertEqual(round_trip[0]["name"], "一级节点")
+        self.assertEqual(round_trip[0]["note"], "一级正文第一段\n一级正文第二段")
+        self.assertEqual(round_trip[0]["children"][0]["name"], "二级节点")
+        self.assertEqual(round_trip[0]["children"][0]["note"], "二级正文")
+        self.assertEqual(round_trip[1]["name"], "另一个一级节点")
+        self.assertEqual(round_trip[1]["note"], "另一个正文")
+
+    def test_node_note_update_survives_project_reload_and_export(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            db.DB_PATH = Path(tmpdir) / "note-export.sqlite3"
+            try:
+                db.init_db()
+                with db.connect() as conn:
+                    project_id = projects.create_project(conn, "正文回写")
+                    conn.commit()
+
+                node = projects.create_node(project_id, None, "章节")
+                projects.update_node(node["id"], "章节", "保存后的正文\n第二段正文")
+
+                reloaded = projects.get_project(project_id)
+                self.assertEqual(reloaded["tree"][0]["note"], "保存后的正文\n第二段正文")
+
+                _, exported = projects.export_project_docx(project_id)
+                round_trip = DocxFolderParser().parse(exported)["tree"]
+                self.assertEqual(round_trip[0]["name"], "章节")
+                self.assertEqual(round_trip[0]["note"], "保存后的正文\n第二段正文")
+            finally:
+                db.DB_PATH = original_db_path
+
 
 def build_test_docx() -> bytes:
     files = {

@@ -25,14 +25,37 @@ def build_docx(project_name: str, tree: list[dict[str, Any]]) -> bytes:
 def flatten_nodes(nodes: list[dict[str, Any]], level: int = 1) -> list[dict[str, Any]]:
     paragraphs: list[dict[str, Any]] = []
     for node in nodes:
-        paragraphs.append({"type": "heading", "level": min(level, 9), "text": node["title"]})
-        note = (node.get("note") or "").strip()
-        if note:
-            for line in note.splitlines():
-                if line.strip():
-                    paragraphs.append({"type": "text", "text": line.strip()})
+        title = node.get("title") or node.get("name") or "untitled"
+        paragraphs.append({"type": "heading", "level": min(level, 9), "text": title})
+        paragraphs.extend(note_paragraphs(node))
         paragraphs.extend(flatten_nodes(node.get("children", []), level + 1))
     return paragraphs
+
+
+def note_paragraphs(node: dict[str, Any]) -> list[dict[str, str]]:
+    paragraphs: list[dict[str, str]] = []
+    for block in node_content_blocks(node):
+        if block["type"] == "text":
+            paragraphs.append({"type": "text", "text": block["text"]})
+        else:
+            paragraphs.append({"type": "text", "text": block["fallback"]})
+    return paragraphs
+
+
+def node_content_blocks(node: dict[str, Any]) -> list[dict[str, str]]:
+    note = node.get("note") or ""
+    blocks = [{"type": "text", "text": line} for line in note.splitlines() if line.strip()]
+
+    metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+    for item in metadata.get("contentBlocks", []):
+        if not isinstance(item, dict):
+            continue
+        block_type = str(item.get("type") or "").strip()
+        if block_type in {"richText", "image", "table"}:
+            label = str(item.get("label") or block_type).strip()
+            blocks.append({"type": block_type, "fallback": f"[{label}]"})
+
+    return blocks
 
 
 def document_xml(tree: list[dict[str, Any]]) -> str:
