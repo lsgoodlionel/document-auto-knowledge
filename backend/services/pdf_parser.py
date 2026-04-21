@@ -182,7 +182,9 @@ def infer_heading_level(line: str) -> int | None:
         return 1
     if re.match(r"^第[一二三四五六七八九十百千万0-9]+[章节部分篇]", line):
         return 1
-    if len(line) <= 48 and not line.endswith(("。", ".", "，", ",")):
+    if len(line) <= 48 and " " not in line and not line.endswith(("。", ".", "，", ",")):
+        return 1
+    if len(line) <= 48 and re.search(r"[\u4e00-\u9fff]", line) and not line.endswith(("。", "，")):
         return 1
     return None
 

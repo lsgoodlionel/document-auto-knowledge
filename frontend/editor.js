@@ -1,17 +1,25 @@
 (() => {
 const STORAGE_KEY = "knowledge-network-state";
+const DEFAULT_OUTLINE_LEVEL = "2";
+const MAX_OUTLINE_RENDERED_NODES = 700;
 
 const state = {
   projectId: null,
   name: "folder-system",
   tree: [],
   selectedId: null,
+  displayDepth: DEFAULT_OUTLINE_LEVEL,
+  expandedIds: new Set(),
+  collapsedIds: new Set(),
   apiMode: false,
   busy: false,
 };
 
 const outlineTree = document.querySelector("#outline-tree");
 const nodeCount = document.querySelector("#node-count");
+const outlineLevelFilter = document.querySelector("#outline-level-filter");
+const expandSiblings = document.querySelector("#expand-siblings");
+const collapseSiblings = document.querySelector("#collapse-siblings");
 const networkCanvas = document.querySelector("#network-canvas");
 const networkMeta = document.querySelector("#network-meta");
 const focusLabel = document.querySelector("#focus-label");
@@ -58,6 +66,9 @@ async function boot() {
     state.name = payload.name || "folder-system";
     state.tree = normalizeTree(payload.tree || []);
     state.selectedId = payload.selectedId || state.tree[0]?.id || null;
+    state.displayDepth = normalizeDisplayDepth(payload.displayDepth);
+    state.expandedIds = new Set(payload.expandedIds || []);
+    state.collapsedIds = new Set(payload.collapsedIds || []);
     if (!state.projectId) {
       state.projectId = await findProjectIdByName(state.name);
     }
@@ -66,6 +77,8 @@ async function boot() {
       await loadProject();
       return;
     }
+    protectLargeOutline();
+    revealNodeInOutline(state.selectedId, false);
     render();
   } catch (error) {
     renderEmptyState("知识网络数据损坏，无法打开编辑器。");
@@ -121,6 +134,7 @@ addChild.addEventListener("click", async () => {
       const child = normalizeNode(data.node);
       selected.children.push(child);
       state.selectedId = child.id;
+      revealNodeInOutline(child.id, true);
       editorSubtitle.textContent = "新子节点已保存到数据库。";
     });
     return;
@@ -135,6 +149,7 @@ addChild.addEventListener("click", async () => {
   };
   selected.children.push(child);
   state.selectedId = child.id;
+  revealNodeInOutline(child.id, true);
   render();
 });
 
@@ -169,6 +184,7 @@ addSibling.addEventListener("click", async () => {
       const sibling = normalizeNode(moved.node);
       info.siblings.splice(info.index + 1, 0, sibling);
       state.selectedId = sibling.id;
+      revealNodeInOutline(sibling.id, true);
       editorSubtitle.textContent = "新同级节点已保存到数据库。";
     });
     return;
@@ -180,6 +196,7 @@ addSibling.addEventListener("click", async () => {
   }
 
   state.selectedId = target.id;
+  revealNodeInOutline(target.id, true);
   render();
 });
 
@@ -204,6 +221,23 @@ deleteNode.addEventListener("click", async () => {
   const nextSelectedId = removeNode(state.selectedId);
   state.selectedId = nextSelectedId;
   render();
+});
+
+outlineLevelFilter.addEventListener("change", () => {
+  state.displayDepth = outlineLevelFilter.value;
+  state.collapsedIds.clear();
+  state.expandedIds.clear();
+  protectLargeOutline();
+  revealNodeInOutline(state.selectedId, false);
+  render();
+});
+
+expandSiblings.addEventListener("click", () => {
+  setSiblingExpansion(true);
+});
+
+collapseSiblings.addEventListener("click", () => {
+  setSiblingExpansion(false);
 });
 
 exportDocx.addEventListener("click", () => {
@@ -252,6 +286,9 @@ function toggleEditor(enabled) {
   addSibling.disabled = disabled;
   deleteNode.disabled = disabled;
   exportDocx.disabled = disabled;
+  outlineLevelFilter.disabled = !enabled;
+  expandSiblings.disabled = disabled;
+  collapseSiblings.disabled = disabled;
 }
 
 function renderOutline() {
@@ -263,28 +300,70 @@ function renderOutline() {
   toggleEditor(true);
   outlineTree.classList.remove("empty");
   outlineTree.innerHTML = "";
-  outlineTree.appendChild(createOutlineList(state.tree));
-  nodeCount.textContent = `${countNodes(state.tree)} 个节点`;
+  outlineLevelFilter.value = state.displayDepth;
+  const renderContext = { rendered: 0, truncated: false };
+  outlineTree.appendChild(createOutlineList(state.tree, 1, renderContext));
+  if (renderContext.truncated) {
+    const note = document.createElement("p");
+    note.className = "tree-limit-note";
+    note.textContent = `目录较大，左侧已先显示 ${MAX_OUTLINE_RENDERED_NODES} 个节点。请收起同级或切换显示级别后继续查看。`;
+    outlineTree.appendChild(note);
+  }
+  const totalNodes = countNodes(state.tree);
+  const visibleLabel = renderContext.truncated ? `，已显示 ${MAX_OUTLINE_RENDERED_NODES} 个` : "";
+  nodeCount.textContent = `${totalNodes} 个节点${visibleLabel}`;
 }
 
-function createOutlineList(nodes) {
+function createOutlineList(nodes, depth = 1, renderContext = { rendered: 0, truncated: false }) {
   const list = document.createElement("ul");
   list.className = "tree-list";
 
   nodes.forEach((node) => {
+    if (renderContext.rendered >= MAX_OUTLINE_RENDERED_NODES) {
+      renderContext.truncated = true;
+      return;
+    }
+
+    renderContext.rendered += 1;
     const item = document.createElement("li");
+    item.className = "tree-item";
+    item.dataset.depth = String(depth);
+
+    const row = document.createElement("div");
+    row.className = `outline-row ${node.id === state.selectedId ? "selected" : ""}`;
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "outline-toggle";
+    toggle.setAttribute("aria-label", `${isOutlineExpanded(node, depth) ? "收起" : "展开"} ${node.name}`);
+    toggle.disabled = !canShowChildren(node, depth);
+    toggle.textContent = getToggleLabel(node, depth);
+    toggle.addEventListener("click", () => {
+      toggleNodeExpansion(node, depth);
+      render();
+    });
+
     const button = document.createElement("button");
     button.type = "button";
     button.className = `outline-node ${node.id === state.selectedId ? "active" : ""}`;
-    button.textContent = node.name;
+    const title = document.createElement("span");
+    title.className = "tree-title";
+    title.textContent = node.name;
+    const badge = document.createElement("span");
+    const hasNote = Boolean((node.note || "").trim());
+    badge.className = `content-badge ${hasNote ? "has-content" : "no-content"}`;
+    badge.textContent = hasNote ? "有正文" : "无正文";
+    button.append(title, badge);
     button.addEventListener("click", () => {
       state.selectedId = node.id;
+      revealNodeInOutline(node.id, false);
       render();
     });
-    item.appendChild(button);
+    row.append(toggle, button);
+    item.appendChild(row);
 
-    if (node.children.length) {
-      item.appendChild(createOutlineList(node.children));
+    if (isOutlineExpanded(node, depth)) {
+      item.appendChild(createOutlineList(node.children, depth + 1, renderContext));
     }
 
     list.appendChild(item);
@@ -362,9 +441,116 @@ function createGraphNode(node, type) {
   `;
   button.addEventListener("click", () => {
     state.selectedId = node.id;
+    revealNodeInOutline(node.id, true);
     render();
   });
   return button;
+}
+
+function getDisplayDepthLimit() {
+  return state.displayDepth === "all" ? Number.POSITIVE_INFINITY : Number(state.displayDepth);
+}
+
+function normalizeDisplayDepth(value) {
+  return ["2", "3", "all"].includes(value) ? value : DEFAULT_OUTLINE_LEVEL;
+}
+
+function canShowChildren(node, depth) {
+  return node.children.length > 0 && depth < getDisplayDepthLimit();
+}
+
+function isOutlineExpanded(node, depth) {
+  if (!canShowChildren(node, depth) || state.collapsedIds.has(node.id)) {
+    return false;
+  }
+
+  return state.expandedIds.has(node.id) || depth < getDisplayDepthLimit();
+}
+
+function getToggleLabel(node, depth) {
+  if (!node.children.length) {
+    return "·";
+  }
+
+  if (!canShowChildren(node, depth)) {
+    return "+";
+  }
+
+  return isOutlineExpanded(node, depth) ? "−" : "+";
+}
+
+function toggleNodeExpansion(node, depth) {
+  if (!canShowChildren(node, depth)) {
+    return;
+  }
+
+  if (isOutlineExpanded(node, depth)) {
+    state.collapsedIds.add(node.id);
+    state.expandedIds.delete(node.id);
+    return;
+  }
+
+  state.expandedIds.add(node.id);
+  state.collapsedIds.delete(node.id);
+}
+
+function setSiblingExpansion(expanded) {
+  const info = findParentInfo(state.selectedId);
+  if (!info) {
+    return;
+  }
+
+  const depth = getNodeDepth(state.selectedId);
+  info.siblings.forEach((node) => {
+    if (!canShowChildren(node, depth)) {
+      return;
+    }
+
+    if (expanded) {
+      state.expandedIds.add(node.id);
+      state.collapsedIds.delete(node.id);
+    } else {
+      state.collapsedIds.add(node.id);
+      state.expandedIds.delete(node.id);
+    }
+  });
+  render();
+}
+
+function revealNodeInOutline(id, allowDepthChange) {
+  if (!id) {
+    return;
+  }
+
+  const depth = getNodeDepth(id);
+  const limit = getDisplayDepthLimit();
+  if (allowDepthChange && depth > limit) {
+    state.displayDepth = depth <= 3 ? "3" : "all";
+  }
+
+  getAncestors(id).forEach((node) => {
+    state.expandedIds.add(node.id);
+    state.collapsedIds.delete(node.id);
+  });
+}
+
+function protectLargeOutline() {
+  if (state.displayDepth !== "all" || countNodes(state.tree) <= MAX_OUTLINE_RENDERED_NODES) {
+    return;
+  }
+
+  collectExpandableIds(state.tree).forEach((id) => state.collapsedIds.add(id));
+  editorSubtitle.textContent = "目录节点较多，已先收起全部层级，可从左侧逐级展开。";
+}
+
+function collectExpandableIds(nodes, ids = []) {
+  nodes.forEach((node) => {
+    if (node.children.length) {
+      ids.push(node.id);
+      collectExpandableIds(node.children, ids);
+    }
+  });
+  return ids;
 }
 
 function normalizeTree(nodes) {
@@ -426,6 +612,10 @@ function buildPath(id) {
   return [...getAncestors(id).map((node) => node.name), findNode(id)?.name || ""].filter(Boolean);
 }
 
+function getNodeDepth(id) {
+  return buildPath(id).length || 1;
+}
+
 function insertSibling(id) {
   const info = findParentInfo(id);
   if (!info) {
@@ -481,6 +671,9 @@ function persistState() {
       name: state.name,
       tree: state.tree,
       selectedId: state.selectedId,
+      displayDepth: state.displayDepth,
+      expandedIds: Array.from(state.expandedIds),
+      collapsedIds: Array.from(state.collapsedIds),
     }),
   );
 }
@@ -511,6 +704,8 @@ async function loadProject(preferredSelectedId = state.selectedId) {
   state.name = project.name || "folder-system";
   state.tree = normalizeTree(project.tree || []);
   state.selectedId = findNode(preferredSelectedId)?.id || state.tree[0]?.id || null;
+  protectLargeOutline();
+  revealNodeInOutline(state.selectedId, false);
   editorSubtitle.textContent = `正在编辑：${state.name}`;
   render();
 }
