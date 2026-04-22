@@ -17,16 +17,16 @@ def create_project_from_docx(filename: str, file_base64: str) -> dict[str, Any]:
     return create_project_from_upload(upload_filename, file_base64)
 
 
-def create_project_from_upload(filename: str, file_base64: str) -> dict[str, Any]:
+def create_project_from_upload(filename: str, file_base64: str, owner_user_id: int | None = None) -> dict[str, Any]:
     imported = import_uploaded_file(filename, file_base64)
-    return create_project_from_import(imported)
+    return create_project_from_import(imported, owner_user_id=owner_user_id)
 
 
-def create_project_from_import(imported: ImportResult) -> dict[str, Any]:
+def create_project_from_import(imported: ImportResult, owner_user_id: int | None = None) -> dict[str, Any]:
     project_name = sanitize_name(imported.project_name)
 
     with connect() as conn:
-        project_id = create_project(conn, project_name)
+        project_id = create_project(conn, project_name, owner_user_id=owner_user_id)
         insert_tree(conn, project_id, None, imported.tree_as_dicts(), source_project_id=project_id)
         conn.commit()
 
@@ -39,8 +39,8 @@ def create_project_from_import(imported: ImportResult) -> dict[str, Any]:
     return project
 
 
-def create_project(conn: sqlite3.Connection, name: str) -> int:
-    cursor = conn.execute("INSERT INTO projects(name) VALUES (?)", (name,))
+def create_project(conn: sqlite3.Connection, name: str, owner_user_id: int | None = None) -> int:
+    cursor = conn.execute("INSERT INTO projects(name, owner_user_id) VALUES (?, ?)", (name, owner_user_id))
     return int(cursor.lastrowid)
 
 
@@ -77,7 +77,7 @@ def insert_tree(
 def list_projects() -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute("SELECT * FROM projects ORDER BY updated_at DESC, id DESC").fetchall()
-    return [row_to_dict(row) for row in rows]
+    return [project_row_to_dict(row_to_dict(row)) for row in rows]
 
 
 def get_project(project_id: int) -> dict[str, Any]:
@@ -91,7 +91,7 @@ def get_project(project_id: int) -> dict[str, Any]:
         ).fetchall()
         project_names = load_project_names(conn)
 
-    project = row_to_dict(project_row)
+    project = project_row_to_dict(row_to_dict(project_row))
     project["tree"] = build_node_tree([row_to_dict(row) for row in node_rows], project_names)
     return project
 
@@ -443,6 +443,12 @@ def export_project_docx(project_id: int) -> tuple[str, bytes]:
 def load_project_names(conn: sqlite3.Connection) -> dict[int, str]:
     rows = conn.execute("SELECT id, name FROM projects").fetchall()
     return {int(row["id"]): str(row["name"]) for row in rows}
+
+
+def project_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
+    data = dict(row)
+    data["ownerUserId"] = data.get("owner_user_id")
+    return data
 
 
 def clone_as_linked_subtree(node: dict[str, Any], source_project_id: int) -> dict[str, Any]:
