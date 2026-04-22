@@ -19,6 +19,7 @@ from backend.services.docx_exporter import build_docx
 from backend.services.docx_parser import DocxFolderParser
 from backend.services.importers import ImporterError, import_file, registry
 from backend.services.exporters import ExporterError, export_project_file
+from backend.services import mindmap
 
 
 class BackendApiSmokeTest(unittest.TestCase):
@@ -208,6 +209,18 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertIn("source_type", columns)
         self.assertIn("metadata", columns)
 
+    def test_init_db_creates_mindmap_tables(self) -> None:
+        with db.connect() as conn:
+            tables = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+
+        self.assertIn("mindmap_edges", tables)
+        self.assertIn("mindmap_snapshots", tables)
+
     def test_attach_root_node_from_another_project_preserves_source_identity(self) -> None:
         with db.connect() as conn:
             target_project_id = projects.create_project(conn, "中图法")
@@ -325,6 +338,71 @@ class BackendApiSmokeTest(unittest.TestCase):
 
         self.assertEqual(context.exception.code, "unsupported_export_format")
         self.assertIn("svg", context.exception.message)
+
+    def test_mindmap_batch_save_persists_node_attrs_and_edges(self) -> None:
+        with db.connect() as conn:
+            project_id = projects.create_project(conn, "Mindmap")
+            root_id = conn.execute(
+                """
+                INSERT INTO nodes(project_id, parent_id, title, note, source_type, metadata, source_project_id, source_node_id, position)
+                VALUES (?, NULL, ?, '', 'manual', '{}', ?, NULL, 0)
+                """,
+                (project_id, "Root", project_id),
+            ).lastrowid
+            conn.commit()
+
+        saved = mindmap.save_project_mindmap(
+            project_id,
+            {
+                "tree": [
+                    {
+                        "id": root_id,
+                        "title": "Root Topic",
+                        "note": "center",
+                        "x": 320,
+                        "y": 180,
+                        "collapsed": True,
+                        "style": {"color": "#3366ff"},
+                        "children": [
+                            {
+                                "clientId": "child-1",
+                                "title": "Branch",
+                                "note": "detail",
+                                "x": 520,
+                                "y": 220,
+                                "collapsed": False,
+                                "style": {"shape": "rounded"},
+                                "children": [],
+                            }
+                        ],
+                    }
+                ],
+                "edges": [
+                    {
+                        "fromNodeId": root_id,
+                        "toClientId": "child-1",
+                        "relation": "topic",
+                        "label": "supports",
+                        "metadata": {"weight": 2},
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(saved["snapshot"]["count"], 1)
+        self.assertEqual(len(saved["nodes"]), 2)
+        root = next(node for node in saved["nodes"] if node["id"] == root_id)
+        branch = next(node for node in saved["nodes"] if node["id"] != root_id)
+        self.assertEqual(root["x"], 320.0)
+        self.assertTrue(root["collapsed"])
+        self.assertEqual(root["style"]["color"], "#3366ff")
+        self.assertEqual(branch["parentId"], root_id)
+        self.assertEqual(saved["edges"][0]["toNodeId"], branch["id"])
+
+        project = projects.get_project(project_id)
+        self.assertEqual(project["tree"][0]["title"], "Root Topic")
+        self.assertEqual(project["tree"][0]["children"][0]["title"], "Branch")
+        self.assertEqual(project["tree"][0]["metadata"]["mindmap"]["x"], 320.0)
 
 
 class HttpApiSmokeTest(unittest.TestCase):
@@ -542,6 +620,81 @@ class HttpApiSmokeTest(unittest.TestCase):
         status, payload = self.request("GET", f"/api/projects/{project_id}/export?format=svg")
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"]["code"], "unsupported_export_format")
+
+    def test_mindmap_api_reads_and_writes_enhanced_structure(self) -> None:
+        with db.connect() as conn:
+            project_id = projects.create_project(conn, "思维导图")
+            conn.commit()
+
+        status, payload = self.request(
+            "PUT",
+            f"/api/projects/{project_id}/mindmap",
+            {
+                "tree": [
+                    {
+                        "clientId": "root-1",
+                        "title": "中心主题",
+                        "note": "总览",
+                        "x": 400,
+                        "y": 240,
+                        "collapsed": False,
+                        "style": {"color": "#ff6600"},
+                        "children": [
+                            {
+                                "clientId": "node-1",
+                                "title": "分支一",
+                                "note": "说明",
+                                "x": 640,
+                                "y": 260,
+                                "collapsed": False,
+                                "style": {"shape": "bubble"},
+                                "children": [],
+                            }
+                        ],
+                    }
+                ],
+                "edges": [
+                    {
+                        "fromClientId": "root-1",
+                        "toClientId": "node-1",
+                        "relation": "topic",
+                        "label": "关联",
+                    }
+                ],
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["nodes"]), 2)
+        self.assertEqual(len(payload["edges"]), 1)
+        self.assertEqual(payload["snapshot"]["count"], 1)
+
+        status, payload = self.request("GET", f"/api/projects/{project_id}/mindmap")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["project"]["tree"][0]["title"], "中心主题")
+        self.assertEqual(payload["project"]["tree"][0]["children"][0]["title"], "分支一")
+        self.assertEqual(payload["nodes"][0]["projectId"], project_id)
+
+        status, payload = self.request(
+            "PUT",
+            f"/api/projects/{project_id}/mindmap",
+            {
+                "tree": [
+                    {
+                        "clientId": "root-2",
+                        "title": "中心主题",
+                        "children": [],
+                    }
+                ],
+                "edges": [
+                    {
+                        "fromClientId": "root-2",
+                        "toNodeId": 999999,
+                    }
+                ],
+            },
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "bad_request")
 
 
 class WordImportExportSmokeTest(unittest.TestCase):
