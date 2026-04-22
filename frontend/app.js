@@ -429,6 +429,7 @@ function redirectToLogin(message) {
 
 function createAuthPanel() {
   const panel = document.createElement("section");
+  panel.id = "auth-status-panel";
   panel.className = "panel projects-panel";
   hero.insertAdjacentElement("afterend", panel);
   return panel;
@@ -480,7 +481,7 @@ function renderAuthSummary(auth) {
     return `当前用户：${auth.user.displayName || auth.user.username || "本地用户"}。可以继续导入和打开历史项目。`;
   }
   if (auth.status === "guest") {
-    return "未登录时显示登录入口；登录成功后首页会展示当前用户并允许继续历史项目。";
+    return "当前站点启用强制登录；登录成功后首页会展示当前用户并允许继续历史项目。";
   }
   if (auth.status === "unavailable") {
     return "前端登录流已准备好，等待登录后端接口合入后即可真正启用。";

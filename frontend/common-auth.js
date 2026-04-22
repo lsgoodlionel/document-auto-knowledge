@@ -105,6 +105,15 @@
     openLoginPage(redirectPath);
   }
 
+  async function requireAuthenticated(redirectPath) {
+    const authState = await getCurrentUser();
+    if (authState.status === "authenticated" && authState.user) {
+      return authState;
+    }
+    openLoginPage(redirectPath || `${window.location.pathname}${window.location.search}`);
+    return authState;
+  }
+
   window.AuthClient = {
     REDIRECT_KEY,
     canUseBackend,
@@ -115,5 +124,6 @@
     consumeRedirect,
     openLoginPage,
     handleUnauthorized,
+    requireAuthenticated,
   };
 })();

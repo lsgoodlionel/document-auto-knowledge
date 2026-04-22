@@ -20,14 +20,18 @@
 
   function renderLoginForm(authState) {
     mount.innerHTML = `
-      <div class="panel-head">
+      <div class="auth-panel-head">
         <div>
+          <p class="eyebrow">SIGN IN</p>
           <h2>账号登录</h2>
           <p class="section-note">${describeAuthState(authState)}</p>
         </div>
-        <a class="ghost button-link" href="./">返回首页</a>
+        <div class="auth-chip-group" aria-label="登录说明">
+          <span class="auth-chip">强制登录模式</span>
+          <span class="auth-chip">本地单机会话</span>
+        </div>
       </div>
-      <form id="login-form" class="form-stack">
+      <form id="login-form" class="form-stack auth-form">
         <label class="field">
           <span>用户名</span>
           <input id="login-username" name="username" type="text" autocomplete="username" placeholder="请输入用户名" />
@@ -36,9 +40,13 @@
           <span>密码</span>
           <input id="login-password" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" />
         </label>
+        <div class="auth-demo">
+          <strong>本地演示账号</strong>
+          <span>用户名：admin</span>
+          <span>密码：admin123</span>
+        </div>
         <div class="actions wrap">
-          <button id="login-submit" class="primary" type="submit">登录</button>
-          <a class="ghost button-link" href="./">继续浏览首页</a>
+          <button id="login-submit" class="primary" type="submit">进入系统</button>
         </div>
         <p id="login-status" class="status">请输入账号信息。</p>
       </form>
@@ -79,16 +87,17 @@
 
   function renderLoggedIn(user) {
     mount.innerHTML = `
-      <div class="panel-head">
+      <div class="auth-panel-head">
         <div>
+          <p class="eyebrow">READY</p>
           <h2>已登录</h2>
           <p class="section-note">当前账号：${escapeHtml(user.displayName || user.username || "本地用户")}</p>
         </div>
-        <a class="ghost button-link" href="./">返回首页</a>
+        <span class="auth-chip">会话有效</span>
       </div>
       <p class="status success">已检测到有效会话，可以继续返回首页或进入之前的跳转目标。</p>
       <div class="actions wrap">
-        <button id="login-continue" class="primary" type="button">继续</button>
+        <button id="login-continue" class="primary" type="button">进入系统</button>
       </div>
     `;
 
@@ -103,7 +112,7 @@
 
   function describeAuthState(authState) {
     if (authState.status === "offline") {
-      return "当前是离线打开页面，登录页需要通过本地服务访问。";
+      return "当前是离线打开页面，强制登录模式需要通过本地服务访问。";
     }
     if (authState.status === "network-error") {
       return "暂时无法连接本地服务，请确认它正在运行。";
@@ -111,7 +120,7 @@
     if (authState.status === "unavailable") {
       return "前端鉴权流已准备好，等待登录后端接口合入。";
     }
-    return "未登录时会跳回这里，登录成功后自动返回原页面。";
+    return "未登录访问首页或知识网络时，会自动跳回这里；登录成功后回到原页面。";
   }
 
   function escapeHtml(value) {

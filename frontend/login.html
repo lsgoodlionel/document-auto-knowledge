@@ -6,16 +6,41 @@
     <title>登录 | 文档自动知识库系统</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
-  <body>
+  <body data-app-page="login">
+    <script src="./common-nav.js"></script>
     <main class="shell">
       <section class="hero">
         <p class="eyebrow">AUTHENTICATION</p>
         <h1>登录文档自动知识库系统</h1>
-        <p class="intro">登录后可继续查看历史项目、进入知识网络编辑器，并为后续项目归属和权限边界打基础。</p>
+        <p class="intro">统一入口现在启用强制登录。登录后即可继续导入文档、查看历史项目，并进入思维导图式知识网络编辑器。</p>
       </section>
 
-      <section id="login-app" class="panel uploader">
-        <p class="status">正在加载登录页。</p>
+      <section class="auth-stage">
+        <article class="auth-story panel">
+          <div class="auth-story-copy">
+            <p class="eyebrow">LOCAL ACCESS</p>
+            <h2>本地知识库，先登录再进入工作台</h2>
+            <p class="section-note">适合文档整理、知识网络沉淀、长期项目资料维护。未登录时不会再直接进入首页或知识网络页面。</p>
+          </div>
+          <div class="auth-story-grid" aria-label="登录页功能摘要">
+            <div class="auth-story-card">
+              <strong>统一导入</strong>
+              <span>支持 Word、PDF、EPUB、图片、Excel、MM、XMind</span>
+            </div>
+            <div class="auth-story-card">
+              <strong>知识网络</strong>
+              <span>目录树、节点正文、跨项目挂接与思维导图画布联动</span>
+            </div>
+            <div class="auth-story-card auth-story-card-accent">
+              <strong>本地测试账号</strong>
+              <span>admin / admin123</span>
+            </div>
+          </div>
+        </article>
+
+        <section id="login-app" class="panel auth-panel">
+          <p class="status">正在加载登录页。</p>
+        </section>
       </section>
     </main>
 
