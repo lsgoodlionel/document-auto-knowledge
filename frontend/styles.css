@@ -216,6 +216,10 @@ h1 {
   gap: 14px;
 }
 
+.auth-menu-grid {
+  margin-top: 8px;
+}
+
 .auth-story-card {
   display: grid;
   gap: 8px;
@@ -272,6 +276,10 @@ h1 {
 
 .auth-form {
   margin-top: 8px;
+}
+
+.auth-menu-actions {
+  margin-top: 22px;
 }
 
 .auth-demo {
