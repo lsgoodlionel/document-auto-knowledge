@@ -1212,19 +1212,41 @@ function getFallbackSelectedId(id) {
 }
 
 function persistState() {
-  sessionStorage.setItem(
-    STORAGE_KEY,
-    JSON.stringify({
-      projectId: state.projectId,
-      name: state.name,
-      tree: state.tree,
-      selectedId: state.selectedId,
-      displayDepth: state.displayDepth,
-      expandedIds: Array.from(state.expandedIds),
-      collapsedIds: Array.from(state.collapsedIds),
-      mindmap: serializeMindmapState(),
-    }),
-  );
+  const payload = {
+    projectId: state.projectId,
+    name: state.name,
+    selectedId: state.selectedId,
+    displayDepth: state.displayDepth,
+    expandedIds: Array.from(state.expandedIds),
+    collapsedIds: Array.from(state.collapsedIds),
+    mindmap: serializeMindmapState(),
+  };
+
+  if (!state.apiMode) {
+    payload.tree = state.tree;
+  }
+
+  try {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch (error) {
+    if (state.apiMode) {
+      try {
+        sessionStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({
+            projectId: state.projectId,
+            name: state.name,
+            selectedId: state.selectedId,
+            displayDepth: state.displayDepth,
+          }),
+        );
+      } catch (_nestedError) {
+        return;
+      }
+      return;
+    }
+    throw error;
+  }
 }
 
 function getProjectId() {

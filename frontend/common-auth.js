@@ -23,7 +23,7 @@
     }
 
     try {
-      const { response, data } = await request("/api/me");
+      const { response, data } = await request("/api/auth/me");
       if (response.status === 404) {
         return { status: "unavailable", available: false, user: null };
       }
@@ -44,7 +44,7 @@
   }
 
   async function login(username, password) {
-    const { response, data } = await request("/api/login", {
+    const { response, data } = await request("/api/auth/login", {
       method: "POST",
       body: { username, password },
     });
@@ -58,7 +58,7 @@
   }
 
   async function logout() {
-    const { response, data } = await request("/api/logout", { method: "POST" });
+    const { response, data } = await request("/api/auth/logout", { method: "POST" });
     if (response.status === 404) {
       throw createAuthError("auth_unavailable", "退出接口尚未合入当前分支。");
     }
