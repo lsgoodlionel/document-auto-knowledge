@@ -66,10 +66,25 @@
         <section class="editor-main">
           <article class="panel network-panel">
             <div class="panel-head">
-              <h2>关系视图</h2>
+              <div>
+                <h2>思维导图画布</h2>
+                <p class="section-note compact">支持节点选中、拖拽、折叠，以及画布平移和缩放。</p>
+              </div>
               <span id="focus-label" class="badge">未选择节点</span>
             </div>
-            <div id="network-canvas" class="network-canvas empty">
+            <div class="mindmap-toolbar" aria-label="思维导图工具栏">
+              <div class="actions wrap compact">
+                <button id="mindmap-auto-layout" class="ghost tiny" type="button">自动布局</button>
+                <button id="mindmap-zoom-out" class="ghost tiny" type="button">缩小</button>
+                <button id="mindmap-zoom-in" class="ghost tiny" type="button">放大</button>
+                <button id="mindmap-reset-view" class="ghost tiny" type="button">重置视角</button>
+              </div>
+              <div class="mindmap-toolbar-meta">
+                <span id="mindmap-view-badge" class="badge">100%</span>
+                <span id="mindmap-status" class="section-note">拖动画布空白处可平移，滚轮可缩放。</span>
+              </div>
+            </div>
+            <div id="network-canvas" class="network-canvas empty" tabindex="0" aria-label="思维导图画布区域">
               请先从左侧目录中选择一个节点。
             </div>
             <div id="network-meta" class="network-meta empty">当前会显示所选节点的上级与下级关系。</div>
