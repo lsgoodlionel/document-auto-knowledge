@@ -14,6 +14,7 @@ from pathlib import Path
 
 from backend import db
 from backend.server import ApiServer, content_disposition
+from backend.services import auth as auth_service
 from backend.services import projects
 from backend.services.docx_exporter import build_docx
 from backend.services.docx_parser import DocxFolderParser
@@ -208,6 +209,28 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertIn("source_type", columns)
         self.assertIn("metadata", columns)
 
+    def test_init_db_adds_auth_columns_and_default_user(self) -> None:
+        legacy_db_path = Path(self.tmpdir.name) / "legacy-auth.sqlite3"
+        with sqlite3.connect(legacy_db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE projects (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+
+        db.init_db(legacy_db_path)
+        with db.connect(legacy_db_path) as conn:
+            project_columns = {row["name"] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
+            user = conn.execute("SELECT username FROM users WHERE username = ?", (auth_service.DEFAULT_USERNAME,)).fetchone()
+
+        self.assertIn("owner_user_id", project_columns)
+        self.assertEqual(user["username"], auth_service.DEFAULT_USERNAME)
+
     def test_attach_root_node_from_another_project_preserves_source_identity(self) -> None:
         with db.connect() as conn:
             target_project_id = projects.create_project(conn, "中图法")
@@ -345,15 +368,24 @@ class HttpApiSmokeTest(unittest.TestCase):
         db.DB_PATH = self.original_db_path
         self.tmpdir.cleanup()
 
-    def request(self, method: str, path: str, payload: dict[str, object] | None = None) -> tuple[int, dict[str, object]]:
+    def request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, object] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, object], dict[str, str]]:
         connection = HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
-        headers = {"Content-Type": "application/json"} if payload is not None else {}
-        connection.request(method, path, body=body, headers=headers)
+        request_headers = dict(headers or {})
+        if payload is not None:
+            request_headers.setdefault("Content-Type", "application/json")
+        connection.request(method, path, body=body, headers=request_headers)
         response = connection.getresponse()
         data = response.read()
+        response_headers = {key: value for key, value in response.getheaders()}
         connection.close()
-        return response.status, json.loads(data.decode("utf-8"))
+        return response.status, json.loads(data.decode("utf-8")), response_headers
 
     def request_binary(
         self,
@@ -376,47 +408,80 @@ class HttpApiSmokeTest(unittest.TestCase):
             project_id = projects.create_project(conn, "HTTP Smoke")
             conn.commit()
 
-        status, payload = self.request("PUT", f"/api/projects/{project_id}", {"name": "HTTP Renamed"})
+        status, payload, _ = self.request("PUT", f"/api/projects/{project_id}", {"name": "HTTP Renamed"})
         self.assertEqual(status, 200)
         self.assertEqual(payload["project"]["name"], "HTTP Renamed")
 
-        status, payload = self.request("POST", f"/api/projects/{project_id}/nodes", {"title": "First"})
+        status, payload, _ = self.request("POST", f"/api/projects/{project_id}/nodes", {"title": "First"})
         self.assertEqual(status, 201)
         first_id = payload["node"]["id"]
 
-        status, payload = self.request("POST", f"/api/projects/{project_id}/nodes", {"title": "Second"})
+        status, payload, _ = self.request("POST", f"/api/projects/{project_id}/nodes", {"title": "Second"})
         self.assertEqual(status, 201)
         second_id = payload["node"]["id"]
 
-        status, payload = self.request("PUT", f"/api/nodes/{second_id}/move", {"parentId": None, "position": 0})
+        status, payload, _ = self.request("PUT", f"/api/nodes/{second_id}/move", {"parentId": None, "position": 0})
         self.assertEqual(status, 200)
         self.assertEqual(payload["node"]["position"], 0)
 
-        status, payload = self.request("GET", f"/api/projects/{project_id}")
+        status, payload, _ = self.request("GET", f"/api/projects/{project_id}")
         self.assertEqual(status, 200)
         self.assertEqual([node["title"] for node in payload["project"]["tree"]], ["Second", "First"])
 
-        status, payload = self.request("DELETE", f"/api/nodes/{first_id}")
+        status, payload, _ = self.request("DELETE", f"/api/nodes/{first_id}")
         self.assertEqual(status, 200)
         self.assertEqual(payload, {"ok": True})
 
-        status, payload = self.request("DELETE", f"/api/projects/{project_id}")
+        status, payload, _ = self.request("DELETE", f"/api/projects/{project_id}")
         self.assertEqual(status, 200)
         self.assertEqual(payload, {"ok": True})
 
-        status, payload = self.request("GET", f"/api/projects/{project_id}")
+        status, payload, _ = self.request("GET", f"/api/projects/{project_id}")
         self.assertEqual(status, 404)
         self.assertEqual(payload["error"]["code"], "not_found")
 
-        status, payload = self.request("GET", "/api/missing")
+        status, payload, _ = self.request("GET", "/api/missing")
         self.assertEqual(status, 404)
         self.assertEqual(payload, {"error": {"code": "not_found", "message": "API not found"}})
+
+    def test_auth_login_logout_and_me(self) -> None:
+        status, payload, headers = self.request(
+            "POST",
+            "/api/auth/login",
+            {"username": auth_service.DEFAULT_USERNAME, "password": auth_service.DEFAULT_PASSWORD},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["user"]["username"], auth_service.DEFAULT_USERNAME)
+        cookie = headers.get("Set-Cookie", "")
+        self.assertIn(auth_service.SESSION_COOKIE_NAME, cookie)
+
+        status, payload, _ = self.request("GET", "/api/auth/me", headers={"Cookie": cookie})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["user"]["username"], auth_service.DEFAULT_USERNAME)
+
+        status, payload, _ = self.request(
+            "POST",
+            "/api/projects/import",
+            {"filename": "auth-owned.docx", "file": base64.b64encode(build_test_docx()).decode("ascii")},
+            headers={"Cookie": cookie},
+        )
+        self.assertEqual(status, 201)
+        self.assertIsNotNone(payload["project"]["ownerUserId"])
+
+        status, payload, headers = self.request("POST", "/api/auth/logout", headers={"Cookie": cookie})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"ok": True})
+        self.assertIn("Max-Age=0", headers.get("Set-Cookie", ""))
+
+        status, payload, _ = self.request("GET", "/api/auth/me", headers={"Cookie": cookie})
+        self.assertEqual(status, 401)
+        self.assertEqual(payload["error"]["code"], "unauthorized")
 
     def test_upload_endpoint_dispatches_by_extension(self) -> None:
         encoded_docx = base64.b64encode(build_test_docx()).decode("ascii")
         encoded_epub = base64.b64encode(build_test_epub()).decode("ascii")
 
-        status, payload = self.request(
+        status, payload, _ = self.request(
             "POST",
             "/api/projects/import",
             {"filename": "接口导入.docx", "file": encoded_docx},
@@ -425,7 +490,7 @@ class HttpApiSmokeTest(unittest.TestCase):
         self.assertEqual(payload["project"]["sourceType"], "docx")
         self.assertEqual(payload["project"]["tree"][0]["note"], "第一章正文第一段\n第一章正文第二段")
 
-        status, payload = self.request(
+        status, payload, _ = self.request(
             "POST",
             "/api/projects/import-docx",
             {"filename": "兼容导入.docx", "file": encoded_docx},
@@ -433,7 +498,7 @@ class HttpApiSmokeTest(unittest.TestCase):
         self.assertEqual(status, 201)
         self.assertEqual(payload["project"]["tree"][0]["sourceType"], "docx")
 
-        status, payload = self.request(
+        status, payload, _ = self.request(
             "POST",
             "/api/projects/import",
             {"filename": "接口 PDF.pdf", "file": base64.b64encode(build_test_pdf()).decode("ascii")},
@@ -441,7 +506,7 @@ class HttpApiSmokeTest(unittest.TestCase):
         self.assertEqual(status, 201)
         self.assertEqual(payload["project"]["sourceType"], "pdf")
 
-        status, payload = self.request(
+        status, payload, _ = self.request(
             "POST",
             "/api/projects/import",
             {"filename": "接口图片.png", "file": base64.b64encode(MINIMAL_PNG).decode("ascii")},
@@ -450,7 +515,7 @@ class HttpApiSmokeTest(unittest.TestCase):
         self.assertEqual(payload["project"]["sourceType"], "image")
         self.assertEqual(payload["project"]["importWarnings"][0]["code"], "ocr_unavailable")
 
-        status, payload = self.request(
+        status, payload, _ = self.request(
             "POST",
             "/api/projects/import",
             {"filename": "接口电子书.epub", "file": encoded_epub},
@@ -459,7 +524,7 @@ class HttpApiSmokeTest(unittest.TestCase):
         self.assertEqual(payload["project"]["sourceType"], "epub")
         self.assertIn("第一章正文第一段", payload["project"]["tree"][0]["note"])
 
-        status, payload = self.request(
+        status, payload, _ = self.request(
             "POST",
             "/api/projects/import",
             {"filename": "kindle.azw3", "file": base64.b64encode(b"BOOKMOBI").decode("ascii")},
@@ -467,7 +532,7 @@ class HttpApiSmokeTest(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"]["code"], "azw3_conversion_required")
 
-        status, payload = self.request(
+        status, payload, _ = self.request(
             "POST",
             "/api/projects/import",
             {"filename": "mind.xmind", "file": encoded_docx},
@@ -485,7 +550,7 @@ class HttpApiSmokeTest(unittest.TestCase):
         source_root = projects.create_node(source_project_id, None, "囚徒的困境", "合作困境")
         projects.create_node(source_project_id, source_root["id"], "纳什均衡", "均衡说明")
 
-        status, payload = self.request(
+        status, payload, _ = self.request(
             "POST",
             f"/api/projects/{target_project_id}/attachments",
             {
@@ -501,7 +566,7 @@ class HttpApiSmokeTest(unittest.TestCase):
         self.assertEqual(attached_root["sourceProjectName"], "囚徒的困境")
         self.assertTrue(attached_root["linkedCopy"])
 
-        status, payload = self.request(
+        status, payload, _ = self.request(
             "POST",
             f"/api/projects/{target_project_id}/attachments",
             {
@@ -539,7 +604,7 @@ class HttpApiSmokeTest(unittest.TestCase):
         self.assertEqual(headers["Content-Type"], "image/png")
         self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
 
-        status, payload = self.request("GET", f"/api/projects/{project_id}/export?format=svg")
+        status, payload, _ = self.request("GET", f"/api/projects/{project_id}/export?format=svg")
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"]["code"], "unsupported_export_format")
 
