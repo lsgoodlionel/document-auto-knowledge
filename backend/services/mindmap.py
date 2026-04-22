@@ -9,9 +9,39 @@ from . import projects
 from .docx_parser import sanitize_name
 
 
+MINDMAP_SCHEMA = """
+CREATE TABLE IF NOT EXISTS mindmap_edges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL,
+  from_node_id INTEGER NOT NULL,
+  to_node_id INTEGER NOT NULL,
+  relation TEXT NOT NULL DEFAULT 'related',
+  label TEXT NOT NULL DEFAULT '',
+  metadata TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY(from_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+  FOREIGN KEY(to_node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_mindmap_edges_project
+ON mindmap_edges(project_id, from_node_id, to_node_id);
+CREATE TABLE IF NOT EXISTS mindmap_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_mindmap_snapshots_project
+ON mindmap_snapshots(project_id, id DESC);
+"""
+
+
 def get_project_mindmap(project_id: int) -> dict[str, Any]:
     project = projects.get_project(project_id)
     with connect() as conn:
+        ensure_mindmap_schema(conn)
         edges = list_edges(conn, project_id)
         snapshot_info = latest_snapshot_info(conn, project_id)
     return build_mindmap_payload(project, edges, snapshot_info)
@@ -26,6 +56,7 @@ def save_project_mindmap(project_id: int, payload: dict[str, Any]) -> dict[str, 
         raise ValueError("mindmap edges must be a list")
 
     with connect() as conn:
+        ensure_mindmap_schema(conn)
         projects.ensure_project(conn, project_id)
         existing_rows = conn.execute("SELECT * FROM nodes WHERE project_id = ?", (project_id,)).fetchall()
         existing_by_id = {int(row["id"]): row_to_dict(row) for row in existing_rows}
@@ -62,6 +93,10 @@ def build_mindmap_payload(
         "edges": edges,
         "snapshot": snapshot_info,
     }
+
+
+def ensure_mindmap_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(MINDMAP_SCHEMA)
 
 
 def flatten_tree_with_mindmap(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:

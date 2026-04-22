@@ -2,6 +2,11 @@ const state = {
   result: null,
   projects: [],
   loadingProjects: false,
+  auth: {
+    status: "unknown",
+    available: false,
+    user: null,
+  },
 };
 
 const SUPPORTED_EXTENSIONS = [".docx", ".pdf", ".epub", ".azw3", ".png", ".jpg", ".jpeg", ".xlsx", ".xls", ".csv", ".mm", ".xmind"];
@@ -26,6 +31,8 @@ const openNetwork = document.querySelector("#open-network");
 const projectStatus = document.querySelector("#project-status");
 const projectList = document.querySelector("#project-list");
 const refreshProjects = document.querySelector("#refresh-projects");
+const hero = document.querySelector(".hero");
+const authPanel = createAuthPanel();
 
 boot();
 
@@ -35,6 +42,11 @@ docxInput.addEventListener("change", () => {
 });
 
 parseBtn.addEventListener("click", async () => {
+  if (shouldGateBackendActions()) {
+    redirectToLogin("请先登录，再导入文档并创建项目。");
+    return;
+  }
+
   const file = docxInput.files?.[0];
   if (!file) {
     renderStatus("请先选择一个支持的文档文件。", "error");
@@ -243,6 +255,11 @@ downloadZip.addEventListener("click", () => {
 });
 
 openNetwork.addEventListener("click", () => {
+  if (shouldGateBackendActions()) {
+    redirectToLogin("请先登录，再进入知识网络。");
+    return;
+  }
+
   if (!state.result?.tree?.length) {
     renderStatus("请先生成目录结构，再打开知识网络。", "error");
     return;
@@ -262,11 +279,26 @@ openNetwork.addEventListener("click", () => {
 });
 
 refreshProjects.addEventListener("click", () => {
+  if (shouldGateBackendActions()) {
+    redirectToLogin("请先登录，再查看历史项目。");
+    return;
+  }
   loadProjects();
 });
 
-function boot() {
+async function boot() {
+  await ensureAuthClient();
+  renderAuthPanel();
+  if (window.AuthClient) {
+    await refreshAuthState();
+  }
+
   if (canUseBackend()) {
+    if (shouldGateBackendActions()) {
+      projectStatus.textContent = "请先登录，再查看历史项目。";
+      renderProjectList([]);
+      return;
+    }
     loadProjects();
     return;
   }
@@ -277,6 +309,20 @@ function boot() {
 
 function canUseBackend() {
   return window.location.protocol === "http:" || window.location.protocol === "https:";
+}
+
+async function ensureAuthClient() {
+  if (window.AuthClient || !canUseBackend()) {
+    return;
+  }
+
+  await new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.src = "./common-auth.js";
+    script.onload = () => resolve();
+    script.onerror = () => resolve();
+    document.head.appendChild(script);
+  });
 }
 
 async function loadProjects() {
@@ -308,8 +354,13 @@ function renderProjectList(projects) {
   projectList.innerHTML = "";
 
   if (!projects.length) {
-    projectStatus.textContent = "还没有历史项目。";
-    projectList.textContent = "上传文档后，项目会保存在这里，之后可以直接继续编辑。";
+    if (shouldGateBackendActions()) {
+      projectStatus.textContent = "请先登录，再查看历史项目。";
+      projectList.textContent = "登录成功后，这里会显示你最近导入过的项目。";
+    } else {
+      projectStatus.textContent = "还没有历史项目。";
+      projectList.textContent = "上传文档后，项目会保存在这里，之后可以直接继续编辑。";
+    }
     projectList.classList.add("empty");
     return;
   }
@@ -329,6 +380,10 @@ function renderProjectList(projects) {
       <span class="project-action">打开</span>
     `;
     button.addEventListener("click", () => {
+      if (shouldGateBackendActions()) {
+        redirectToLogin("请先登录，再打开历史项目。");
+        return;
+      }
       openProjectEditor(project.id);
     });
     projectList.appendChild(button);
@@ -345,14 +400,146 @@ function openProjectEditor(projectId) {
   window.location.assign(`./editor.html?projectId=${encodeURIComponent(projectId)}`);
 }
 
+async function refreshAuthState() {
+  if (!window.AuthClient) {
+    state.auth = {
+      status: "unavailable",
+      available: false,
+      user: null,
+    };
+    renderAuthPanel();
+    return state.auth;
+  }
+
+  state.auth = await window.AuthClient.getCurrentUser();
+  renderAuthPanel();
+  return state.auth;
+}
+
+function shouldGateBackendActions() {
+  return canUseBackend() && state.auth.available && state.auth.status !== "authenticated";
+}
+
+function redirectToLogin(message) {
+  renderStatus(message, "error");
+  if (window.AuthClient) {
+    window.AuthClient.openLoginPage(`${window.location.pathname}${window.location.search}`);
+  }
+}
+
+function createAuthPanel() {
+  const panel = document.createElement("section");
+  panel.className = "panel projects-panel";
+  hero.insertAdjacentElement("afterend", panel);
+  return panel;
+}
+
+function renderAuthPanel() {
+  const auth = state.auth;
+  authPanel.innerHTML = `
+    <div class="panel-head">
+      <div>
+        <h2>登录状态</h2>
+        <p class="section-note">${escapeHtml(renderAuthSummary(auth))}</p>
+      </div>
+      <span class="badge">${escapeHtml(renderAuthBadge(auth))}</span>
+    </div>
+    <div class="actions wrap">${renderAuthActions(auth)}</div>
+  `;
+
+  authPanel.querySelector("[data-action='login']")?.addEventListener("click", () => {
+    if (window.AuthClient) {
+      window.AuthClient.openLoginPage(`${window.location.pathname}${window.location.search}`);
+    }
+  });
+
+  authPanel.querySelector("[data-action='logout']")?.addEventListener("click", async () => {
+    if (!window.AuthClient) {
+      return;
+    }
+
+    try {
+      await window.AuthClient.logout();
+      state.auth = {
+        status: "guest",
+        available: true,
+        user: null,
+      };
+      renderAuthPanel();
+      renderProjectList([]);
+      projectStatus.textContent = "请先登录，再查看历史项目。";
+      renderStatus("你已退出登录。", "success");
+    } catch (error) {
+      renderStatus(error.message || "退出失败。", "error");
+    }
+  });
+}
+
+function renderAuthSummary(auth) {
+  if (auth.status === "authenticated" && auth.user) {
+    return `当前用户：${auth.user.displayName || auth.user.username || "本地用户"}。可以继续导入和打开历史项目。`;
+  }
+  if (auth.status === "guest") {
+    return "未登录时显示登录入口；登录成功后首页会展示当前用户并允许继续历史项目。";
+  }
+  if (auth.status === "unavailable") {
+    return "前端登录流已准备好，等待登录后端接口合入后即可真正启用。";
+  }
+  if (auth.status === "offline") {
+    return "当前是离线打开页面，登录与会话状态需要通过本地服务访问。";
+  }
+  if (auth.status === "network-error") {
+    return "暂时无法连接本地服务，请确认后端正在运行。";
+  }
+  return "正在检查当前会话。";
+}
+
+function renderAuthBadge(auth) {
+  if (auth.status === "authenticated") {
+    return "已登录";
+  }
+  if (auth.status === "guest") {
+    return "未登录";
+  }
+  if (auth.status === "unavailable") {
+    return "后端待接入";
+  }
+  return "状态检查中";
+}
+
+function renderAuthActions(auth) {
+  if (auth.status === "authenticated" && auth.user) {
+    return `
+      <span class="badge">${escapeHtml(auth.user.displayName || auth.user.username || "本地用户")}</span>
+      <button class="ghost" type="button" data-action="logout">退出登录</button>
+    `;
+  }
+
+  return `<button class="primary" type="button" data-action="login">前往登录</button>`;
+}
+
 async function apiRequest(path, options = {}) {
   const response = await fetch(path, {
     method: options.method || "GET",
     headers: options.body ? { "Content-Type": "application/json" } : {},
     body: options.body ? JSON.stringify(options.body) : undefined,
+    credentials: "same-origin",
   });
   const contentType = response.headers.get("Content-Type") || "";
   const data = contentType.includes("application/json") ? await response.json() : {};
+
+  if (response.status === 401) {
+    if (window.AuthClient) {
+      state.auth = {
+        status: "guest",
+        available: true,
+        user: null,
+      };
+      renderAuthPanel();
+      window.AuthClient.handleUnauthorized(`${window.location.pathname}${window.location.search}`);
+    }
+    throw new Error("当前登录已失效，正在跳转登录页。");
+  }
 
   if (!response.ok) {
     throw new Error(getApiErrorMessage(data, "请求失败。"));
