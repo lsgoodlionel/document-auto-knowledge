@@ -2,6 +2,14 @@
 const STORAGE_KEY = "knowledge-network-state";
 const DEFAULT_OUTLINE_LEVEL = "2";
 const MAX_OUTLINE_RENDERED_NODES = 700;
+const MINDMAP_MIN_ZOOM = 0.55;
+const MINDMAP_MAX_ZOOM = 1.8;
+const MINDMAP_DEFAULT_ZOOM = 1;
+const MINDMAP_NODE_WIDTH = 220;
+const MINDMAP_NODE_HEIGHT = 84;
+const MINDMAP_COLUMN_GAP = 260;
+const MINDMAP_ROW_GAP = 26;
+const MINDMAP_ROOT_GAP = 60;
 
 const state = {
   projectId: null,
@@ -16,6 +24,24 @@ const state = {
   availableProjects: [],
   sourceProjectTree: [],
   exporting: false,
+  mindmap: {
+    zoom: MINDMAP_DEFAULT_ZOOM,
+    panX: 120,
+    panY: 120,
+    manualPositions: {},
+    collapsedIds: new Set(),
+  },
+  interaction: {
+    mode: null,
+    pointerId: null,
+    nodeId: null,
+    startClientX: 0,
+    startClientY: 0,
+    startPanX: 0,
+    startPanY: 0,
+    startNodeX: 0,
+    startNodeY: 0,
+  },
 };
 
 const EXPORT_FORMATS = {
@@ -49,6 +75,12 @@ const collapseSiblings = document.querySelector("#collapse-siblings");
 const networkCanvas = document.querySelector("#network-canvas");
 const networkMeta = document.querySelector("#network-meta");
 const focusLabel = document.querySelector("#focus-label");
+const mindmapAutoLayout = document.querySelector("#mindmap-auto-layout");
+const mindmapZoomOut = document.querySelector("#mindmap-zoom-out");
+const mindmapZoomIn = document.querySelector("#mindmap-zoom-in");
+const mindmapResetView = document.querySelector("#mindmap-reset-view");
+const mindmapViewBadge = document.querySelector("#mindmap-view-badge");
+const mindmapStatus = document.querySelector("#mindmap-status");
 const selectionPath = document.querySelector("#selection-path");
 const selectionSummary = document.querySelector("#selection-summary");
 const nodeTitle = document.querySelector("#node-title");
@@ -81,6 +113,36 @@ returnHome.addEventListener("click", (event) => {
   window.location.assign(window.location.protocol === "file:" ? "./index.html" : "./");
 });
 
+mindmapAutoLayout.addEventListener("click", () => {
+  state.mindmap.manualPositions = {};
+  centerMindmapView();
+  setMindmapStatus("已恢复自动布局。", "success");
+  renderNetwork();
+  persistState();
+});
+
+mindmapZoomOut.addEventListener("click", () => {
+  changeMindmapZoom(-0.1);
+});
+
+mindmapZoomIn.addEventListener("click", () => {
+  changeMindmapZoom(0.1);
+});
+
+mindmapResetView.addEventListener("click", () => {
+  state.mindmap.zoom = MINDMAP_DEFAULT_ZOOM;
+  centerMindmapView();
+  setMindmapStatus("画布视角已重置。");
+  renderNetwork();
+  persistState();
+});
+
+networkCanvas.addEventListener("pointerdown", handleMindmapPointerDown);
+networkCanvas.addEventListener("wheel", handleMindmapWheel, { passive: false });
+window.addEventListener("pointermove", handleMindmapPointerMove);
+window.addEventListener("pointerup", finishMindmapInteraction);
+window.addEventListener("pointercancel", finishMindmapInteraction);
+
 async function boot() {
   const projectId = getProjectId();
   if (projectId) {
@@ -109,6 +171,7 @@ async function boot() {
     state.displayDepth = normalizeDisplayDepth(payload.displayDepth);
     state.expandedIds = new Set(payload.expandedIds || []);
     state.collapsedIds = new Set(payload.collapsedIds || []);
+    hydrateMindmapState(payload.mindmap);
     if (!state.projectId) {
       state.projectId = await findProjectIdByName(state.name);
     }
@@ -376,6 +439,8 @@ function renderEmptyState(message = "当前没有可编辑的知识网络，请�
   selectionSummary.textContent = "当前未选择节点。";
   selectionSummary.classList.add("empty");
   updateExportPanel();
+  setMindmapStatus("加载项目后即可进入思维导图画布。");
+  updateMindmapToolbar();
   toggleEditor(false);
   linkTargetLabel.textContent = "挂接到当前节点";
   linkingHint.textContent = "把另一个已导入项目的根节点复制挂接到当前选中节点下，并保留来源项目标识。";
@@ -397,6 +462,10 @@ function toggleEditor(enabled) {
   attachProjectLink.disabled = disabled || !state.apiMode;
   exportFormat.disabled = disabled;
   exportFile.disabled = disabled;
+  mindmapAutoLayout.disabled = disabled;
+  mindmapZoomOut.disabled = disabled;
+  mindmapZoomIn.disabled = disabled;
+  mindmapResetView.disabled = disabled;
 }
 
 function renderOutline() {
@@ -507,42 +576,57 @@ function renderNetwork() {
     networkCanvas.classList.add("empty");
     networkMeta.textContent = "当前会显示所选节点的上级与下级关系。";
     networkMeta.classList.add("empty");
+    updateMindmapToolbar();
     return;
   }
 
+  pruneMindmapState();
+  const layout = buildMindmapLayout();
+  const nodes = layout.nodes;
+  const links = layout.links;
   const parentChain = getAncestors(selected.id);
-  const children = selected.children;
+  const children = getVisibleChildren(selected);
   networkCanvas.classList.remove("empty");
   networkCanvas.innerHTML = "";
 
-  const canvas = document.createElement("div");
-  canvas.className = "network-stage";
+  const viewport = document.createElement("div");
+  viewport.className = "mindmap-viewport";
 
-  if (parentChain.length) {
-    const parentRow = document.createElement("div");
-    parentRow.className = "network-row network-row-top";
-    parentChain.forEach((node) => parentRow.appendChild(createGraphNode(node, "ancestor")));
-    canvas.appendChild(parentRow);
-  }
+  const surface = document.createElement("div");
+  surface.className = "mindmap-surface";
+  surface.style.transform = `translate(${state.mindmap.panX}px, ${state.mindmap.panY}px) scale(${state.mindmap.zoom})`;
 
-  const centerRow = document.createElement("div");
-  centerRow.className = "network-row network-row-center";
-  centerRow.appendChild(createGraphNode(selected, "selected"));
-  canvas.appendChild(centerRow);
+  const linksSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  linksSvg.setAttribute("class", "mindmap-links");
+  const bounds = getMindmapBounds(nodes);
+  linksSvg.setAttribute("viewBox", `${bounds.minX - 120} ${bounds.minY - 120} ${bounds.width + 240} ${bounds.height + 240}`);
 
-  if (children.length) {
-    const childRow = document.createElement("div");
-    childRow.className = "network-row network-row-bottom";
-    children.forEach((node) => childRow.appendChild(createGraphNode(node, "child")));
-    canvas.appendChild(childRow);
-  }
+  links.forEach((link) => {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("class", `mindmap-link ${link.selected ? "selected" : ""}`);
+    path.setAttribute("d", buildMindmapLinkPath(link.from, link.to));
+    linksSvg.appendChild(path);
+  });
 
-  networkCanvas.appendChild(canvas);
+  const nodeLayer = document.createElement("div");
+  nodeLayer.className = "mindmap-node-layer";
+  nodeLayer.style.width = `${Math.max(bounds.maxX + 240, 1200)}px`;
+  nodeLayer.style.height = `${Math.max(bounds.maxY + 240, 900)}px`;
+
+  nodes.forEach((entry) => {
+    nodeLayer.appendChild(createMindmapNode(entry));
+  });
+
+  surface.append(linksSvg, nodeLayer);
+  viewport.appendChild(surface);
+  networkCanvas.appendChild(viewport);
 
   const parentName = parentChain[parentChain.length - 1]?.name || "无";
   const childNames = children.length ? children.map((node) => node.name).join("、") : "无";
-  networkMeta.textContent = `上级节点：${parentName}；下级节点：${childNames}`;
+  const collapsedCount = state.mindmap.collapsedIds.size;
+  networkMeta.textContent = `上级节点：${parentName}；下级节点：${childNames}；当前显示 ${nodes.length} 个节点${collapsedCount ? `，已折叠 ${collapsedCount} 个分支` : ""}。`;
   networkMeta.classList.remove("empty");
+  updateMindmapToolbar(nodes.length);
 }
 
 function createGraphNode(node, type) {
@@ -558,6 +642,33 @@ function createGraphNode(node, type) {
     selectNode(node.id);
   });
   return button;
+}
+
+function createMindmapNode(entry) {
+  const node = entry.node;
+  const element = document.createElement("button");
+  element.type = "button";
+  element.className = `mindmap-node ${node.id === state.selectedId ? "selected" : ""} ${node.linkedCopy ? "linked" : ""}`;
+  element.dataset.nodeId = node.id;
+  element.style.left = `${entry.x}px`;
+  element.style.top = `${entry.y}px`;
+  element.innerHTML = `
+    <span class="mindmap-node-title">${escapeHtml(formatNodeLabel(node))}</span>
+    <span class="mindmap-node-meta">${getVisibleChildren(node).length} 个下级${node.note ? " · 有正文" : ""}</span>
+    <span class="mindmap-node-actions">
+      <span class="mindmap-node-anchor">${node.children.length ? (state.mindmap.collapsedIds.has(node.id) ? "+" : "−") : "·"}</span>
+    </span>
+  `;
+  element.addEventListener("click", (event) => {
+    const action = event.target.closest(".mindmap-node-anchor");
+    if (action && node.children.length) {
+      event.stopPropagation();
+      toggleMindmapCollapse(node.id);
+      return;
+    }
+    selectNode(node.id);
+  });
+  return element;
 }
 
 function getDisplayDepthLimit() {
@@ -711,6 +822,279 @@ function renderSelectedNodeDetails(selected) {
   selectionSummary.classList.remove("empty");
 }
 
+function hydrateMindmapState(raw) {
+  if (!raw || typeof raw !== "object") {
+    return;
+  }
+
+  state.mindmap.zoom = clampNumber(raw.zoom, MINDMAP_MIN_ZOOM, MINDMAP_MAX_ZOOM, MINDMAP_DEFAULT_ZOOM);
+  state.mindmap.panX = clampNumber(raw.panX, -4000, 4000, 120);
+  state.mindmap.panY = clampNumber(raw.panY, -4000, 4000, 120);
+  state.mindmap.manualPositions = normalizeMindmapPositions(raw.manualPositions);
+  state.mindmap.collapsedIds = new Set(Array.isArray(raw.collapsedIds) ? raw.collapsedIds : []);
+}
+
+function serializeMindmapState() {
+  return {
+    zoom: state.mindmap.zoom,
+    panX: state.mindmap.panX,
+    panY: state.mindmap.panY,
+    manualPositions: state.mindmap.manualPositions,
+    collapsedIds: Array.from(state.mindmap.collapsedIds),
+  };
+}
+
+function normalizeMindmapPositions(positions) {
+  const normalized = {};
+  if (!positions || typeof positions !== "object") {
+    return normalized;
+  }
+
+  Object.entries(positions).forEach(([id, value]) => {
+    if (!value || typeof value !== "object") {
+      return;
+    }
+    normalized[id] = {
+      x: Number.isFinite(value.x) ? value.x : 0,
+      y: Number.isFinite(value.y) ? value.y : 0,
+    };
+  });
+  return normalized;
+}
+
+function pruneMindmapState() {
+  const validIds = new Set(collectNodeIds(state.tree));
+  Object.keys(state.mindmap.manualPositions).forEach((id) => {
+    if (!validIds.has(id)) {
+      delete state.mindmap.manualPositions[id];
+    }
+  });
+  state.mindmap.collapsedIds.forEach((id) => {
+    if (!validIds.has(id)) {
+      state.mindmap.collapsedIds.delete(id);
+    }
+  });
+}
+
+function collectNodeIds(nodes, ids = []) {
+  nodes.forEach((node) => {
+    ids.push(node.id);
+    collectNodeIds(node.children, ids);
+  });
+  return ids;
+}
+
+function getVisibleChildren(node) {
+  if (state.mindmap.collapsedIds.has(node.id)) {
+    return [];
+  }
+  return node.children || [];
+}
+
+function toggleMindmapCollapse(nodeId) {
+  if (state.mindmap.collapsedIds.has(nodeId)) {
+    state.mindmap.collapsedIds.delete(nodeId);
+    setMindmapStatus("已展开节点分支。");
+  } else {
+    state.mindmap.collapsedIds.add(nodeId);
+    setMindmapStatus("已折叠节点分支。");
+  }
+  renderNetwork();
+  persistState();
+}
+
+function buildMindmapLayout() {
+  const nodes = [];
+  const links = [];
+  let cursorY = 0;
+
+  state.tree.forEach((root) => {
+    const blockHeight = measureMindmapSubtree(root);
+    layoutMindmapNode(root, 0, cursorY, blockHeight, nodes, links);
+    cursorY += blockHeight + MINDMAP_ROOT_GAP;
+  });
+
+  return { nodes, links };
+}
+
+function measureMindmapSubtree(node) {
+  const children = getVisibleChildren(node);
+  if (!children.length) {
+    return MINDMAP_NODE_HEIGHT;
+  }
+
+  const total = children.reduce((sum, child, index) => sum + measureMindmapSubtree(child) + (index ? MINDMAP_ROW_GAP : 0), 0);
+  return Math.max(MINDMAP_NODE_HEIGHT, total);
+}
+
+function layoutMindmapNode(node, depth, startY, subtreeHeight, nodes, links) {
+  const defaultY = startY + (subtreeHeight - MINDMAP_NODE_HEIGHT) / 2;
+  const defaultX = depth * MINDMAP_COLUMN_GAP;
+  const manual = state.mindmap.manualPositions[node.id];
+  const x = manual?.x ?? defaultX;
+  const y = manual?.y ?? defaultY;
+  nodes.push({ node, x, y, width: MINDMAP_NODE_WIDTH, height: MINDMAP_NODE_HEIGHT, selected: node.id === state.selectedId });
+
+  let childY = startY;
+  getVisibleChildren(node).forEach((child) => {
+    const childHeight = measureMindmapSubtree(child);
+    layoutMindmapNode(child, depth + 1, childY, childHeight, nodes, links);
+    const childManual = state.mindmap.manualPositions[child.id];
+    links.push({
+      from: { x: x + MINDMAP_NODE_WIDTH, y: y + MINDMAP_NODE_HEIGHT / 2 },
+      to: { x: (childManual?.x ?? (depth + 1) * MINDMAP_COLUMN_GAP), y: (childManual?.y ?? (childY + (childHeight - MINDMAP_NODE_HEIGHT) / 2)) + MINDMAP_NODE_HEIGHT / 2 },
+      selected: child.id === state.selectedId || node.id === state.selectedId,
+    });
+    childY += childHeight + MINDMAP_ROW_GAP;
+  });
+}
+
+function buildMindmapLinkPath(from, to) {
+  const midX = from.x + (to.x - from.x) / 2;
+  return `M ${from.x} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${to.x} ${to.y}`;
+}
+
+function getMindmapBounds(nodes) {
+  if (!nodes.length) {
+    return { minX: 0, minY: 0, maxX: 1200, maxY: 900, width: 1200, height: 900 };
+  }
+
+  const minX = Math.min(...nodes.map((item) => item.x));
+  const minY = Math.min(...nodes.map((item) => item.y));
+  const maxX = Math.max(...nodes.map((item) => item.x + item.width));
+  const maxY = Math.max(...nodes.map((item) => item.y + item.height));
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
+  };
+}
+
+function centerMindmapView() {
+  state.mindmap.panX = 120;
+  state.mindmap.panY = 120;
+}
+
+function changeMindmapZoom(delta) {
+  const next = clampNumber(Number((state.mindmap.zoom + delta).toFixed(2)), MINDMAP_MIN_ZOOM, MINDMAP_MAX_ZOOM, MINDMAP_DEFAULT_ZOOM);
+  state.mindmap.zoom = next;
+  updateMindmapToolbar();
+  renderNetwork();
+  persistState();
+}
+
+function handleMindmapWheel(event) {
+  if (!state.tree.length || networkCanvas.classList.contains("empty")) {
+    return;
+  }
+  event.preventDefault();
+  const delta = event.deltaY > 0 ? -0.08 : 0.08;
+  state.mindmap.zoom = clampNumber(Number((state.mindmap.zoom + delta).toFixed(2)), MINDMAP_MIN_ZOOM, MINDMAP_MAX_ZOOM, MINDMAP_DEFAULT_ZOOM);
+  setMindmapStatus(`缩放到 ${Math.round(state.mindmap.zoom * 100)}%。`);
+  renderNetwork();
+  persistState();
+}
+
+function handleMindmapPointerDown(event) {
+  if (!state.tree.length || networkCanvas.classList.contains("empty")) {
+    return;
+  }
+
+  if (event.target.closest(".mindmap-node-anchor")) {
+    return;
+  }
+
+  const nodeElement = event.target.closest(".mindmap-node");
+  if (nodeElement) {
+    state.interaction.mode = "drag-node";
+    state.interaction.pointerId = event.pointerId;
+    state.interaction.nodeId = nodeElement.dataset.nodeId;
+    state.interaction.startClientX = event.clientX;
+    state.interaction.startClientY = event.clientY;
+    const current = state.mindmap.manualPositions[state.interaction.nodeId] || findMindmapEntry(state.interaction.nodeId);
+    state.interaction.startNodeX = current?.x ?? 0;
+    state.interaction.startNodeY = current?.y ?? 0;
+    nodeElement.setPointerCapture?.(event.pointerId);
+    return;
+  }
+
+  state.interaction.mode = "pan";
+  state.interaction.pointerId = event.pointerId;
+  state.interaction.startClientX = event.clientX;
+  state.interaction.startClientY = event.clientY;
+  state.interaction.startPanX = state.mindmap.panX;
+  state.interaction.startPanY = state.mindmap.panY;
+}
+
+function handleMindmapPointerMove(event) {
+  if (state.interaction.pointerId !== event.pointerId) {
+    return;
+  }
+
+  if (state.interaction.mode === "pan") {
+    state.mindmap.panX = state.interaction.startPanX + (event.clientX - state.interaction.startClientX);
+    state.mindmap.panY = state.interaction.startPanY + (event.clientY - state.interaction.startClientY);
+    renderNetwork();
+    return;
+  }
+
+  if (state.interaction.mode === "drag-node" && state.interaction.nodeId) {
+    const deltaX = (event.clientX - state.interaction.startClientX) / state.mindmap.zoom;
+    const deltaY = (event.clientY - state.interaction.startClientY) / state.mindmap.zoom;
+    state.mindmap.manualPositions[state.interaction.nodeId] = {
+      x: state.interaction.startNodeX + deltaX,
+      y: state.interaction.startNodeY + deltaY,
+    };
+    renderNetwork();
+  }
+}
+
+function finishMindmapInteraction(event) {
+  if (event && state.interaction.pointerId && event.pointerId !== state.interaction.pointerId) {
+    return;
+  }
+
+  if (state.interaction.mode === "drag-node" && state.interaction.nodeId) {
+    setMindmapStatus("节点位置已更新。");
+  }
+
+  if (state.interaction.mode === "pan") {
+    setMindmapStatus("画布视角已更新。");
+  }
+
+  state.interaction.mode = null;
+  state.interaction.pointerId = null;
+  state.interaction.nodeId = null;
+  persistState();
+}
+
+function findMindmapEntry(nodeId) {
+  const layout = buildMindmapLayout();
+  return layout.nodes.find((entry) => entry.node.id === nodeId);
+}
+
+function updateMindmapToolbar(visibleCount = 0) {
+  mindmapViewBadge.textContent = `${Math.round(state.mindmap.zoom * 100)}%`;
+  if (!mindmapStatus.dataset.tone && visibleCount) {
+    setMindmapStatus(`当前画布显示 ${visibleCount} 个节点。`);
+  }
+}
+
+function setMindmapStatus(message, tone = "neutral") {
+  mindmapStatus.textContent = message;
+  mindmapStatus.dataset.tone = tone === "neutral" ? "" : tone;
+}
+
+function clampNumber(value, min, max, fallback) {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, value));
+}
+
 function normalizeTree(nodes) {
   return nodes.map((node) => normalizeNode(node));
 }
@@ -828,18 +1212,41 @@ function getFallbackSelectedId(id) {
 }
 
 function persistState() {
-  sessionStorage.setItem(
-    STORAGE_KEY,
-    JSON.stringify({
-      projectId: state.projectId,
-      name: state.name,
-      tree: state.tree,
-      selectedId: state.selectedId,
-      displayDepth: state.displayDepth,
-      expandedIds: Array.from(state.expandedIds),
-      collapsedIds: Array.from(state.collapsedIds),
-    }),
-  );
+  const payload = {
+    projectId: state.projectId,
+    name: state.name,
+    selectedId: state.selectedId,
+    displayDepth: state.displayDepth,
+    expandedIds: Array.from(state.expandedIds),
+    collapsedIds: Array.from(state.collapsedIds),
+    mindmap: serializeMindmapState(),
+  };
+
+  if (!state.apiMode) {
+    payload.tree = state.tree;
+  }
+
+  try {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch (error) {
+    if (state.apiMode) {
+      try {
+        sessionStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({
+            projectId: state.projectId,
+            name: state.name,
+            selectedId: state.selectedId,
+            displayDepth: state.displayDepth,
+          }),
+        );
+      } catch (_nestedError) {
+        return;
+      }
+      return;
+    }
+    throw error;
+  }
 }
 
 function getProjectId() {
@@ -867,6 +1274,7 @@ async function loadProject(preferredSelectedId = state.selectedId) {
   const project = data.project;
   state.name = project.name || "folder-system";
   state.tree = normalizeTree(project.tree || []);
+  pruneMindmapState();
   state.selectedId = preferredSelectedId;
   ensureSelectedNode();
   protectLargeOutline();

@@ -10,8 +10,8 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from .config import FRONTEND_DIR, HOST, MAX_UPLOAD_SIZE, PORT
 from .db import init_db
+from .services import auth, mindmap, projects
 from .services.exporters import ExporterError, export_project_file
-from .services import projects
 from .services.importers import ImporterError
 
 
@@ -28,6 +28,10 @@ def json_response(handler: BaseHTTPRequestHandler, status: int, payload: Any) ->
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(data)))
+    extra_headers = getattr(handler, "_extra_headers", {})
+    for key, value in extra_headers.items():
+        handler.send_header(key, value)
+    handler._extra_headers = {}
     handler.end_headers()
     handler.wfile.write(data)
 
@@ -39,7 +43,7 @@ def error_response(handler: BaseHTTPRequestHandler, status: int, code: str, mess
 def handle_api_error(handler: BaseHTTPRequestHandler, exc: Exception) -> None:
     if isinstance(exc, ApiError):
         error_response(handler, exc.status, exc.code, exc.message)
-    elif isinstance(exc, (ImporterError, ExporterError)):
+    elif isinstance(exc, (ImporterError, ExporterError, auth.AuthError)):
         error_response(handler, exc.status, exc.code, exc.message)
     elif isinstance(exc, KeyError):
         error_response(handler, HTTPStatus.NOT_FOUND, "not_found", str(exc).strip("'"))
@@ -81,8 +85,14 @@ class ApiServer(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed_url = urlparse(self.path)
         path = parsed_url.path
+        if path == "/api/auth/me":
+            self._handle_auth_me()
+            return
         if path == "/api/projects":
             json_response(self, HTTPStatus.OK, {"projects": projects.list_projects()})
+            return
+        if path.startswith("/api/projects/") and path.endswith("/mindmap"):
+            self._handle_get_mindmap(path)
             return
         if path.startswith("/api/projects/") and path.endswith("/export"):
             self._handle_export(path, parsed_url.query)
@@ -97,6 +107,12 @@ class ApiServer(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path == "/api/auth/login":
+            self._handle_auth_login()
+            return
+        if path == "/api/auth/logout":
+            self._handle_auth_logout()
+            return
         if path == "/api/projects/import":
             self._handle_import()
             return
@@ -117,6 +133,9 @@ class ApiServer(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:
         path = urlparse(self.path).path
         if path.startswith("/api/projects/"):
+            if path.endswith("/mindmap"):
+                self._handle_save_mindmap(path)
+                return
             self._handle_rename_project(path)
             return
         if path.startswith("/api/nodes/") and path.endswith("/move"):
@@ -151,11 +170,42 @@ class ApiServer(BaseHTTPRequestHandler):
     def _handle_import(self) -> None:
         try:
             payload = self._read_json()
-            project = projects.create_project_from_upload(payload.get("filename", ""), payload.get("file", ""))
+            user = auth.get_optional_user_for_token(self._session_token())
+            project = projects.create_project_from_upload(
+                payload.get("filename", ""),
+                payload.get("file", ""),
+                owner_user_id=user["id"] if user else None,
+            )
         except Exception as exc:
             handle_api_error(self, exc)
             return
         json_response(self, HTTPStatus.CREATED, {"project": project})
+
+    def _handle_auth_login(self) -> None:
+        try:
+            payload = self._read_json()
+            user, cookie_header = auth.login(payload.get("username", ""), payload.get("password", ""))
+            self._extra_headers = {"Set-Cookie": cookie_header}
+        except Exception as exc:
+            handle_api_error(self, exc)
+            return
+        json_response(self, HTTPStatus.OK, {"user": user})
+
+    def _handle_auth_logout(self) -> None:
+        try:
+            self._extra_headers = {"Set-Cookie": auth.logout(self._session_token())}
+        except Exception as exc:
+            handle_api_error(self, exc)
+            return
+        json_response(self, HTTPStatus.OK, {"ok": True})
+
+    def _handle_auth_me(self) -> None:
+        try:
+            user = auth.get_user_for_token(self._session_token())
+        except Exception as exc:
+            handle_api_error(self, exc)
+            return
+        json_response(self, HTTPStatus.OK, {"user": user})
 
     def _handle_get_project(self, path: str) -> None:
         try:
@@ -166,6 +216,15 @@ class ApiServer(BaseHTTPRequestHandler):
             return
         json_response(self, HTTPStatus.OK, {"project": project})
 
+    def _handle_get_mindmap(self, path: str) -> None:
+        try:
+            project_id = parse_id(path.split("/")[3], "project id")
+            payload = mindmap.get_project_mindmap(project_id)
+        except Exception as exc:
+            handle_api_error(self, exc)
+            return
+        json_response(self, HTTPStatus.OK, payload)
+
     def _handle_rename_project(self, path: str) -> None:
         try:
             project_id = parse_id(path.rstrip("/").split("/")[-1], "project id")
@@ -175,6 +234,16 @@ class ApiServer(BaseHTTPRequestHandler):
             handle_api_error(self, exc)
             return
         json_response(self, HTTPStatus.OK, {"project": project})
+
+    def _handle_save_mindmap(self, path: str) -> None:
+        try:
+            project_id = parse_id(path.split("/")[3], "project id")
+            payload = self._read_json()
+            result = mindmap.save_project_mindmap(project_id, payload)
+        except Exception as exc:
+            handle_api_error(self, exc)
+            return
+        json_response(self, HTTPStatus.OK, result)
 
     def _handle_delete_project(self, path: str) -> None:
         try:
@@ -270,6 +339,9 @@ class ApiServer(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _session_token(self) -> str | None:
+        return auth.session_token_from_cookie(self.headers.get("Cookie"))
 
 
 def guess_type(suffix: str) -> str:
