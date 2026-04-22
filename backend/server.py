@@ -6,11 +6,13 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from .config import FRONTEND_DIR, HOST, MAX_UPLOAD_SIZE, PORT
 from .db import init_db
-from .services import projects
+from .services import auth, mindmap, projects
+from .services.exporters import ExporterError, export_project_file
+from .services.importers import ImporterError
 
 
 class ApiError(Exception):
@@ -26,6 +28,10 @@ def json_response(handler: BaseHTTPRequestHandler, status: int, payload: Any) ->
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(data)))
+    extra_headers = getattr(handler, "_extra_headers", {})
+    for key, value in extra_headers.items():
+        handler.send_header(key, value)
+    handler._extra_headers = {}
     handler.end_headers()
     handler.wfile.write(data)
 
@@ -36,6 +42,8 @@ def error_response(handler: BaseHTTPRequestHandler, status: int, code: str, mess
 
 def handle_api_error(handler: BaseHTTPRequestHandler, exc: Exception) -> None:
     if isinstance(exc, ApiError):
+        error_response(handler, exc.status, exc.code, exc.message)
+    elif isinstance(exc, (ImporterError, ExporterError, auth.AuthError)):
         error_response(handler, exc.status, exc.code, exc.message)
     elif isinstance(exc, KeyError):
         error_response(handler, HTTPStatus.NOT_FOUND, "not_found", str(exc).strip("'"))
@@ -64,10 +72,10 @@ def ascii_filename_fallback(filename: str) -> str:
     fallback = filename.encode("ascii", "ignore").decode("ascii")
     fallback = re.sub(r'[\r\n"\\;]', "_", fallback)
     fallback = re.sub(r"\s+", " ", fallback).strip()
+    extension = filename.rsplit(".", 1)[-1].encode("ascii", "ignore").decode("ascii") if "." in filename else ""
     if not fallback or fallback.startswith("."):
-        fallback = "download.docx" if filename.lower().endswith(".docx") else "download"
-    if "." not in fallback and "." in filename:
-        extension = filename.rsplit(".", 1)[-1].encode("ascii", "ignore").decode("ascii")
+        fallback = f"download.{extension}" if extension else "download"
+    if "." not in fallback and extension:
         if extension:
             fallback = f"{fallback}.{extension}"
     return fallback
@@ -75,12 +83,19 @@ def ascii_filename_fallback(filename: str) -> str:
 
 class ApiServer(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
+        if path == "/api/auth/me":
+            self._handle_auth_me()
+            return
         if path == "/api/projects":
             json_response(self, HTTPStatus.OK, {"projects": projects.list_projects()})
             return
+        if path.startswith("/api/projects/") and path.endswith("/mindmap"):
+            self._handle_get_mindmap(path)
+            return
         if path.startswith("/api/projects/") and path.endswith("/export"):
-            self._handle_export_docx(path)
+            self._handle_export(path, parsed_url.query)
             return
         if path.startswith("/api/projects/"):
             self._handle_get_project(path)
@@ -92,8 +107,20 @@ class ApiServer(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path == "/api/auth/login":
+            self._handle_auth_login()
+            return
+        if path == "/api/auth/logout":
+            self._handle_auth_logout()
+            return
+        if path == "/api/projects/import":
+            self._handle_import()
+            return
         if path == "/api/projects/import-docx":
-            self._handle_import_docx()
+            self._handle_import()
+            return
+        if path.startswith("/api/projects/") and path.endswith("/attachments"):
+            self._handle_attach_project_subtree(path)
             return
         if path.startswith("/api/projects/") and path.endswith("/nodes"):
             self._handle_create_node(path)
@@ -106,6 +133,9 @@ class ApiServer(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:
         path = urlparse(self.path).path
         if path.startswith("/api/projects/"):
+            if path.endswith("/mindmap"):
+                self._handle_save_mindmap(path)
+                return
             self._handle_rename_project(path)
             return
         if path.startswith("/api/nodes/") and path.endswith("/move"):
@@ -137,14 +167,45 @@ class ApiServer(BaseHTTPRequestHandler):
             raise ValueError("request too large")
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
-    def _handle_import_docx(self) -> None:
+    def _handle_import(self) -> None:
         try:
             payload = self._read_json()
-            project = projects.create_project_from_docx(payload.get("filename", ""), payload.get("file", ""))
+            user = auth.get_optional_user_for_token(self._session_token())
+            project = projects.create_project_from_upload(
+                payload.get("filename", ""),
+                payload.get("file", ""),
+                owner_user_id=user["id"] if user else None,
+            )
         except Exception as exc:
             handle_api_error(self, exc)
             return
         json_response(self, HTTPStatus.CREATED, {"project": project})
+
+    def _handle_auth_login(self) -> None:
+        try:
+            payload = self._read_json()
+            user, cookie_header = auth.login(payload.get("username", ""), payload.get("password", ""))
+            self._extra_headers = {"Set-Cookie": cookie_header}
+        except Exception as exc:
+            handle_api_error(self, exc)
+            return
+        json_response(self, HTTPStatus.OK, {"user": user})
+
+    def _handle_auth_logout(self) -> None:
+        try:
+            self._extra_headers = {"Set-Cookie": auth.logout(self._session_token())}
+        except Exception as exc:
+            handle_api_error(self, exc)
+            return
+        json_response(self, HTTPStatus.OK, {"ok": True})
+
+    def _handle_auth_me(self) -> None:
+        try:
+            user = auth.get_user_for_token(self._session_token())
+        except Exception as exc:
+            handle_api_error(self, exc)
+            return
+        json_response(self, HTTPStatus.OK, {"user": user})
 
     def _handle_get_project(self, path: str) -> None:
         try:
@@ -155,6 +216,15 @@ class ApiServer(BaseHTTPRequestHandler):
             return
         json_response(self, HTTPStatus.OK, {"project": project})
 
+    def _handle_get_mindmap(self, path: str) -> None:
+        try:
+            project_id = parse_id(path.split("/")[3], "project id")
+            payload = mindmap.get_project_mindmap(project_id)
+        except Exception as exc:
+            handle_api_error(self, exc)
+            return
+        json_response(self, HTTPStatus.OK, payload)
+
     def _handle_rename_project(self, path: str) -> None:
         try:
             project_id = parse_id(path.rstrip("/").split("/")[-1], "project id")
@@ -164,6 +234,16 @@ class ApiServer(BaseHTTPRequestHandler):
             handle_api_error(self, exc)
             return
         json_response(self, HTTPStatus.OK, {"project": project})
+
+    def _handle_save_mindmap(self, path: str) -> None:
+        try:
+            project_id = parse_id(path.split("/")[3], "project id")
+            payload = self._read_json()
+            result = mindmap.save_project_mindmap(project_id, payload)
+        except Exception as exc:
+            handle_api_error(self, exc)
+            return
+        json_response(self, HTTPStatus.OK, result)
 
     def _handle_delete_project(self, path: str) -> None:
         try:
@@ -183,6 +263,23 @@ class ApiServer(BaseHTTPRequestHandler):
             handle_api_error(self, exc)
             return
         json_response(self, HTTPStatus.CREATED, {"node": node})
+
+    def _handle_attach_project_subtree(self, path: str) -> None:
+        try:
+            project_id = parse_id(path.split("/")[3], "project id")
+            payload = self._read_json()
+            source_root_node_id = payload.get("sourceRootNodeId")
+            target_parent_id = payload.get("targetParentId")
+            project = projects.attach_project_subtree(
+                project_id,
+                parse_id(str(target_parent_id), "target parent id") if target_parent_id is not None else None,
+                parse_id(str(payload.get("sourceProjectId")), "source project id"),
+                parse_id(str(source_root_node_id), "source root node id") if source_root_node_id is not None else None,
+            )
+        except Exception as exc:
+            handle_api_error(self, exc)
+            return
+        json_response(self, HTTPStatus.OK, {"project": project})
 
     def _handle_update_node(self, path: str) -> None:
         try:
@@ -213,14 +310,18 @@ class ApiServer(BaseHTTPRequestHandler):
             return
         json_response(self, HTTPStatus.OK, {"node": node})
 
-    def _handle_export_docx(self, path: str) -> None:
+    def _handle_export(self, path: str, query: str) -> None:
         try:
             project_id = parse_id(path.split("/")[3], "project id")
-            filename, content = projects.export_project_docx(project_id)
+            format_name = parse_qs(query).get("format", ["docx"])[0] or "docx"
+            project = projects.get_project(project_id)
+
+            exported = export_project_file(project["name"], project["tree"], format_name)
+            filename, content_type, content = exported.filename, exported.content_type, exported.data
         except Exception as exc:
             handle_api_error(self, exc)
             return
-        binary_response(self, HTTPStatus.OK, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", content, filename)
+        binary_response(self, HTTPStatus.OK, content_type, content, filename)
 
     def _serve_frontend(self, path: str) -> None:
         if path == "/":
@@ -238,6 +339,9 @@ class ApiServer(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _session_token(self) -> str | None:
+        return auth.session_token_from_cookie(self.headers.get("Cookie"))
 
 
 def guess_type(suffix: str) -> str:

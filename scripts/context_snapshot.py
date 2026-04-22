@@ -20,6 +20,7 @@ def main() -> None:
         "README.md",
         "docs/PROJECT_STATE.md",
         "docs/V2_PLAN.md",
+        "docs/V2_PARALLEL_TASKS.md",
         "docs/PARALLEL_TASKS.md",
         "docs/ARCHITECTURE.md",
         "backend/server.py",

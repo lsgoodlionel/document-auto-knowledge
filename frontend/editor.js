@@ -1,37 +1,147 @@
 (() => {
 const STORAGE_KEY = "knowledge-network-state";
+const DEFAULT_OUTLINE_LEVEL = "2";
+const MAX_OUTLINE_RENDERED_NODES = 700;
+const MINDMAP_MIN_ZOOM = 0.55;
+const MINDMAP_MAX_ZOOM = 1.8;
+const MINDMAP_DEFAULT_ZOOM = 1;
+const MINDMAP_NODE_WIDTH = 220;
+const MINDMAP_NODE_HEIGHT = 84;
+const MINDMAP_COLUMN_GAP = 260;
+const MINDMAP_ROW_GAP = 26;
+const MINDMAP_ROOT_GAP = 60;
 
 const state = {
   projectId: null,
   name: "folder-system",
   tree: [],
   selectedId: null,
+  displayDepth: DEFAULT_OUTLINE_LEVEL,
+  expandedIds: new Set(),
+  collapsedIds: new Set(),
   apiMode: false,
   busy: false,
+  availableProjects: [],
+  sourceProjectTree: [],
+  exporting: false,
+  mindmap: {
+    zoom: MINDMAP_DEFAULT_ZOOM,
+    panX: 120,
+    panY: 120,
+    manualPositions: {},
+    collapsedIds: new Set(),
+  },
+  interaction: {
+    mode: null,
+    pointerId: null,
+    nodeId: null,
+    startClientX: 0,
+    startClientY: 0,
+    startPanX: 0,
+    startPanY: 0,
+    startNodeX: 0,
+    startNodeY: 0,
+  },
+};
+
+const EXPORT_FORMATS = {
+  docx: {
+    label: "Word",
+    extension: "docx",
+    mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  },
+  pdf: {
+    label: "PDF",
+    extension: "pdf",
+    mime: "application/pdf",
+  },
+  mm: {
+    label: "MM",
+    extension: "mm",
+    mime: "application/xml",
+  },
+  png: {
+    label: "图片",
+    extension: "png",
+    mime: "image/png",
+  },
 };
 
 const outlineTree = document.querySelector("#outline-tree");
 const nodeCount = document.querySelector("#node-count");
+const outlineLevelFilter = document.querySelector("#outline-level-filter");
+const expandSiblings = document.querySelector("#expand-siblings");
+const collapseSiblings = document.querySelector("#collapse-siblings");
 const networkCanvas = document.querySelector("#network-canvas");
 const networkMeta = document.querySelector("#network-meta");
 const focusLabel = document.querySelector("#focus-label");
+const mindmapAutoLayout = document.querySelector("#mindmap-auto-layout");
+const mindmapZoomOut = document.querySelector("#mindmap-zoom-out");
+const mindmapZoomIn = document.querySelector("#mindmap-zoom-in");
+const mindmapResetView = document.querySelector("#mindmap-reset-view");
+const mindmapViewBadge = document.querySelector("#mindmap-view-badge");
+const mindmapStatus = document.querySelector("#mindmap-status");
 const selectionPath = document.querySelector("#selection-path");
+const selectionSummary = document.querySelector("#selection-summary");
 const nodeTitle = document.querySelector("#node-title");
 const nodeNote = document.querySelector("#node-note");
+const noteStatus = document.querySelector("#note-status");
 const saveNode = document.querySelector("#save-node");
 const addChild = document.querySelector("#add-child");
 const addSibling = document.querySelector("#add-sibling");
 const deleteNode = document.querySelector("#delete-node");
-const exportDocx = document.querySelector("#export-docx");
+const exportFormat = document.querySelector("#export-format");
+const exportFile = document.querySelector("#export-file");
+const exportFilename = document.querySelector("#export-filename");
+const exportStatus = document.querySelector("#export-status");
 const editorSubtitle = document.querySelector("#editor-subtitle");
 const returnHome = document.querySelector("#return-home");
+const linkTargetLabel = document.querySelector("#link-target-label");
+const linkSourceProject = document.querySelector("#link-source-project");
+const linkSourceRoot = document.querySelector("#link-source-root");
+const attachProjectLink = document.querySelector("#attach-project-link");
+const linkingHint = document.querySelector("#linking-hint");
 
 boot();
+
+nodeNote.addEventListener("input", () => {
+  updateNoteStatus({ note: nodeNote.value });
+});
 
 returnHome.addEventListener("click", (event) => {
   event.preventDefault();
   window.location.assign(window.location.protocol === "file:" ? "./index.html" : "./");
 });
+
+mindmapAutoLayout.addEventListener("click", () => {
+  state.mindmap.manualPositions = {};
+  centerMindmapView();
+  setMindmapStatus("已恢复自动布局。", "success");
+  renderNetwork();
+  persistState();
+});
+
+mindmapZoomOut.addEventListener("click", () => {
+  changeMindmapZoom(-0.1);
+});
+
+mindmapZoomIn.addEventListener("click", () => {
+  changeMindmapZoom(0.1);
+});
+
+mindmapResetView.addEventListener("click", () => {
+  state.mindmap.zoom = MINDMAP_DEFAULT_ZOOM;
+  centerMindmapView();
+  setMindmapStatus("画布视角已重置。");
+  renderNetwork();
+  persistState();
+});
+
+networkCanvas.addEventListener("pointerdown", handleMindmapPointerDown);
+networkCanvas.addEventListener("wheel", handleMindmapWheel, { passive: false });
+window.addEventListener("pointermove", handleMindmapPointerMove);
+window.addEventListener("pointerup", finishMindmapInteraction);
+window.addEventListener("pointercancel", finishMindmapInteraction);
 
 async function boot() {
   const projectId = getProjectId();
@@ -58,6 +168,10 @@ async function boot() {
     state.name = payload.name || "folder-system";
     state.tree = normalizeTree(payload.tree || []);
     state.selectedId = payload.selectedId || state.tree[0]?.id || null;
+    state.displayDepth = normalizeDisplayDepth(payload.displayDepth);
+    state.expandedIds = new Set(payload.expandedIds || []);
+    state.collapsedIds = new Set(payload.collapsedIds || []);
+    hydrateMindmapState(payload.mindmap);
     if (!state.projectId) {
       state.projectId = await findProjectIdByName(state.name);
     }
@@ -66,6 +180,8 @@ async function boot() {
       await loadProject();
       return;
     }
+    protectLargeOutline();
+    revealNodeInOutline(state.selectedId, false);
     render();
   } catch (error) {
     renderEmptyState("知识网络数据损坏，无法打开编辑器。");
@@ -79,7 +195,7 @@ saveNode.addEventListener("click", async () => {
   }
 
   const title = sanitizeName(nodeTitle.value) || "untitled";
-  const note = nodeNote.value.trim();
+  const note = normalizeNoteInput(nodeNote.value);
 
   if (state.apiMode) {
     await runEditorAction(async () => {
@@ -102,6 +218,45 @@ saveNode.addEventListener("click", async () => {
   render();
 });
 
+linkSourceProject.addEventListener("change", async () => {
+  await runEditorAction(async () => {
+    await loadSourceProjectTree(linkSourceProject.value);
+  });
+});
+
+attachProjectLink.addEventListener("click", async () => {
+  if (!state.apiMode || !state.projectId) {
+    return;
+  }
+
+  const sourceProjectId = Number(linkSourceProject.value);
+  if (!sourceProjectId) {
+    editorSubtitle.textContent = "请先选择来源项目。";
+    return;
+  }
+
+  const sourceRootValue = linkSourceRoot.value;
+  const targetParentId = state.selectedId || null;
+  const sourceRootNodeId = sourceRootValue ? Number(sourceRootValue) : null;
+
+  await runEditorAction(async () => {
+    const data = await apiRequest(`/api/projects/${state.projectId}/attachments`, {
+      method: "POST",
+      body: {
+        targetParentId,
+        sourceProjectId,
+        sourceRootNodeId,
+      },
+    });
+    state.name = data.project.name || state.name;
+    state.tree = normalizeTree(data.project.tree || []);
+    state.selectedId = targetParentId || state.tree[0]?.id || null;
+    editorSubtitle.textContent = "跨项目挂接已保存。";
+    await loadAvailableProjects();
+    await loadSourceProjectTree(linkSourceProject.value);
+  });
+});
+
 addChild.addEventListener("click", async () => {
   const selected = findNode(state.selectedId);
   if (!selected) {
@@ -121,6 +276,7 @@ addChild.addEventListener("click", async () => {
       const child = normalizeNode(data.node);
       selected.children.push(child);
       state.selectedId = child.id;
+      revealNodeInOutline(child.id, true);
       editorSubtitle.textContent = "新子节点已保存到数据库。";
     });
     return;
@@ -135,6 +291,7 @@ addChild.addEventListener("click", async () => {
   };
   selected.children.push(child);
   state.selectedId = child.id;
+  revealNodeInOutline(child.id, true);
   render();
 });
 
@@ -169,6 +326,7 @@ addSibling.addEventListener("click", async () => {
       const sibling = normalizeNode(moved.node);
       info.siblings.splice(info.index + 1, 0, sibling);
       state.selectedId = sibling.id;
+      revealNodeInOutline(sibling.id, true);
       editorSubtitle.textContent = "新同级节点已保存到数据库。";
     });
     return;
@@ -180,6 +338,7 @@ addSibling.addEventListener("click", async () => {
   }
 
   state.selectedId = target.id;
+  revealNodeInOutline(target.id, true);
   render();
 });
 
@@ -206,24 +365,61 @@ deleteNode.addEventListener("click", async () => {
   render();
 });
 
-exportDocx.addEventListener("click", () => {
+outlineLevelFilter.addEventListener("change", () => {
+  state.displayDepth = outlineLevelFilter.value;
+  state.collapsedIds.clear();
+  state.expandedIds.clear();
+  protectLargeOutline();
+  revealNodeInOutline(state.selectedId, false);
+  render();
+});
+
+expandSiblings.addEventListener("click", () => {
+  setSiblingExpansion(true);
+});
+
+collapseSiblings.addEventListener("click", () => {
+  setSiblingExpansion(false);
+});
+
+exportFormat.addEventListener("change", () => {
+  updateExportPanel();
+});
+
+exportFile.addEventListener("click", async () => {
   if (!state.tree.length) {
-    editorSubtitle.textContent = "没有可导出的知识网络。";
+    setExportStatus("没有可导出的知识网络。", "error");
     return;
   }
 
-  if (state.apiMode) {
-    window.location.assign(`/api/projects/${state.projectId}/export`);
-    editorSubtitle.textContent = "正在按数据库中的最新结构导出 Word。";
+  const formatKey = exportFormat.value;
+  const format = EXPORT_FORMATS[formatKey] || EXPORT_FORMATS.docx;
+  const filename = buildExportFilename(formatKey);
+
+  if (!state.apiMode) {
+    if (formatKey !== "docx") {
+      setExportStatus("离线打开编辑器时目前只支持导出 Word。请选择 Word，或通过本地服务打开后导出其他格式。", "error");
+      return;
+    }
+
+    const docxBytes = buildKnowledgeDocx(state.tree, state.name);
+    downloadBlob(filename, new Blob([docxBytes], { type: format.mime }));
+    setExportStatus("新的 Word 文档已生成并开始下载。", "success");
     return;
   }
 
-  const docxBytes = buildKnowledgeDocx(state.tree, state.name);
-  downloadBlob(`${state.name || "knowledge-network"}.docx`, new Blob([docxBytes], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }));
-  editorSubtitle.textContent = "新的 Word 文档已生成并开始下载。";
+  await runExportAction(async () => {
+    setExportStatus(`正在导出 ${format.label}...`);
+    const result = await requestExport(formatKey);
+    validateExportResponse(formatKey, result);
+    downloadBlob(result.filename || filename, result.blob);
+    setExportStatus(`${format.label} 文件已生成并开始下载。`, "success");
+  });
 });
 
 function render() {
+  ensureSelectedNode();
+  updateExportPanel();
   renderOutline();
   renderInspector();
   renderNetwork();
@@ -240,18 +436,36 @@ function renderEmptyState(message = "当前没有可编辑的知识网络，请�
   nodeCount.textContent = "0 个节点";
   focusLabel.textContent = "未选择节点";
   selectionPath.textContent = "暂无路径";
+  selectionSummary.textContent = "当前未选择节点。";
+  selectionSummary.classList.add("empty");
+  updateExportPanel();
+  setMindmapStatus("加载项目后即可进入思维导图画布。");
+  updateMindmapToolbar();
   toggleEditor(false);
+  linkTargetLabel.textContent = "挂接到当前节点";
+  linkingHint.textContent = "把另一个已导入项目的根节点复制挂接到当前选中节点下，并保留来源项目标识。";
 }
 
 function toggleEditor(enabled) {
-  const disabled = !enabled || state.busy;
+  const disabled = !enabled || state.busy || state.exporting;
   nodeTitle.disabled = disabled;
   nodeNote.disabled = disabled;
   saveNode.disabled = disabled;
   addChild.disabled = disabled;
   addSibling.disabled = disabled;
   deleteNode.disabled = disabled;
-  exportDocx.disabled = disabled;
+  outlineLevelFilter.disabled = !enabled;
+  expandSiblings.disabled = disabled;
+  collapseSiblings.disabled = disabled;
+  linkSourceProject.disabled = disabled || !state.apiMode;
+  linkSourceRoot.disabled = disabled || !state.apiMode;
+  attachProjectLink.disabled = disabled || !state.apiMode;
+  exportFormat.disabled = disabled;
+  exportFile.disabled = disabled;
+  mindmapAutoLayout.disabled = disabled;
+  mindmapZoomOut.disabled = disabled;
+  mindmapZoomIn.disabled = disabled;
+  mindmapResetView.disabled = disabled;
 }
 
 function renderOutline() {
@@ -263,28 +477,68 @@ function renderOutline() {
   toggleEditor(true);
   outlineTree.classList.remove("empty");
   outlineTree.innerHTML = "";
-  outlineTree.appendChild(createOutlineList(state.tree));
-  nodeCount.textContent = `${countNodes(state.tree)} 个节点`;
+  outlineLevelFilter.value = state.displayDepth;
+  const renderContext = { rendered: 0, truncated: false };
+  outlineTree.appendChild(createOutlineList(state.tree, 1, renderContext));
+  if (renderContext.truncated) {
+    const note = document.createElement("p");
+    note.className = "tree-limit-note";
+    note.textContent = `目录较大，左侧已先显示 ${MAX_OUTLINE_RENDERED_NODES} 个节点。请收起同级或切换显示级别后继续查看。`;
+    outlineTree.appendChild(note);
+  }
+  const totalNodes = countNodes(state.tree);
+  const visibleLabel = renderContext.truncated ? `，已显示 ${MAX_OUTLINE_RENDERED_NODES} 个` : "";
+  nodeCount.textContent = `${totalNodes} 个节点${visibleLabel}`;
 }
 
-function createOutlineList(nodes) {
+function createOutlineList(nodes, depth = 1, renderContext = { rendered: 0, truncated: false }) {
   const list = document.createElement("ul");
   list.className = "tree-list";
 
   nodes.forEach((node) => {
+    if (renderContext.rendered >= MAX_OUTLINE_RENDERED_NODES) {
+      renderContext.truncated = true;
+      return;
+    }
+
+    renderContext.rendered += 1;
     const item = document.createElement("li");
+    item.className = "tree-item";
+    item.dataset.depth = String(depth);
+
+    const row = document.createElement("div");
+    row.className = `outline-row ${node.id === state.selectedId ? "selected" : ""}`;
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "outline-toggle";
+    toggle.setAttribute("aria-label", `${isOutlineExpanded(node, depth) ? "收起" : "展开"} ${node.name}`);
+    toggle.disabled = !canShowChildren(node, depth);
+    toggle.textContent = getToggleLabel(node, depth);
+    toggle.addEventListener("click", () => {
+      toggleNodeExpansion(node, depth);
+      render();
+    });
+
     const button = document.createElement("button");
     button.type = "button";
     button.className = `outline-node ${node.id === state.selectedId ? "active" : ""}`;
-    button.textContent = node.name;
+    const title = document.createElement("span");
+    title.className = "tree-title";
+    title.textContent = formatNodeLabel(node);
+    const badge = document.createElement("span");
+    const hasNote = Boolean((node.note || "").trim());
+    badge.className = `content-badge ${hasNote ? "has-content" : "no-content"}`;
+    badge.textContent = hasNote ? "有正文" : "无正文";
+    button.append(title, badge);
     button.addEventListener("click", () => {
-      state.selectedId = node.id;
-      render();
+      selectNode(node.id);
     });
-    item.appendChild(button);
+    row.append(toggle, button);
+    item.appendChild(row);
 
-    if (node.children.length) {
-      item.appendChild(createOutlineList(node.children));
+    if (isOutlineExpanded(node, depth)) {
+      item.appendChild(createOutlineList(node.children, depth + 1, renderContext));
     }
 
     list.appendChild(item);
@@ -294,77 +548,551 @@ function createOutlineList(nodes) {
 }
 
 function renderInspector() {
-  const selected = findNode(state.selectedId);
+  const selected = getSelectedNode();
   if (!selected) {
     nodeTitle.value = "";
     nodeNote.value = "";
-    focusLabel.textContent = "未选择节点";
-    selectionPath.textContent = "暂无路径";
+    updateNoteStatus(null);
+    renderSelectedNodeDetails(null);
+    linkTargetLabel.textContent = "挂接到项目根级";
+    linkingHint.textContent = "当前未选择节点，挂接时会追加到项目根级。";
     return;
   }
 
   nodeTitle.value = selected.name;
   nodeNote.value = selected.note || "";
-  focusLabel.textContent = selected.name;
-  selectionPath.textContent = buildPath(selected.id).join(" / ");
+  updateNoteStatus(selected);
+  renderSelectedNodeDetails(selected);
+  linkTargetLabel.textContent = `挂接到：${selected.name}`;
+  linkingHint.textContent = selected.linkedCopy && selected.sourceProjectName
+    ? `当前节点来自 ${selected.sourceProjectName}，仍可继续作为挂接目标。`
+    : "把另一个已导入项目的根节点复制挂接到当前选中节点下，并保留来源项目标识。";
 }
 
 function renderNetwork() {
-  const selected = findNode(state.selectedId);
+  const selected = getSelectedNode();
   if (!selected) {
     networkCanvas.textContent = "请先从左侧目录中选择一个节点。";
     networkCanvas.classList.add("empty");
+    networkMeta.textContent = "当前会显示所选节点的上级与下级关系。";
+    networkMeta.classList.add("empty");
+    updateMindmapToolbar();
     return;
   }
 
+  pruneMindmapState();
+  const layout = buildMindmapLayout();
+  const nodes = layout.nodes;
+  const links = layout.links;
   const parentChain = getAncestors(selected.id);
-  const children = selected.children;
+  const children = getVisibleChildren(selected);
   networkCanvas.classList.remove("empty");
   networkCanvas.innerHTML = "";
 
-  const canvas = document.createElement("div");
-  canvas.className = "network-stage";
+  const viewport = document.createElement("div");
+  viewport.className = "mindmap-viewport";
 
-  if (parentChain.length) {
-    const parentRow = document.createElement("div");
-    parentRow.className = "network-row network-row-top";
-    parentChain.forEach((node) => parentRow.appendChild(createGraphNode(node, "ancestor")));
-    canvas.appendChild(parentRow);
-  }
+  const surface = document.createElement("div");
+  surface.className = "mindmap-surface";
+  surface.style.transform = `translate(${state.mindmap.panX}px, ${state.mindmap.panY}px) scale(${state.mindmap.zoom})`;
 
-  const centerRow = document.createElement("div");
-  centerRow.className = "network-row network-row-center";
-  centerRow.appendChild(createGraphNode(selected, "selected"));
-  canvas.appendChild(centerRow);
+  const linksSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  linksSvg.setAttribute("class", "mindmap-links");
+  const bounds = getMindmapBounds(nodes);
+  linksSvg.setAttribute("viewBox", `${bounds.minX - 120} ${bounds.minY - 120} ${bounds.width + 240} ${bounds.height + 240}`);
 
-  if (children.length) {
-    const childRow = document.createElement("div");
-    childRow.className = "network-row network-row-bottom";
-    children.forEach((node) => childRow.appendChild(createGraphNode(node, "child")));
-    canvas.appendChild(childRow);
-  }
+  links.forEach((link) => {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("class", `mindmap-link ${link.selected ? "selected" : ""}`);
+    path.setAttribute("d", buildMindmapLinkPath(link.from, link.to));
+    linksSvg.appendChild(path);
+  });
 
-  networkCanvas.appendChild(canvas);
+  const nodeLayer = document.createElement("div");
+  nodeLayer.className = "mindmap-node-layer";
+  nodeLayer.style.width = `${Math.max(bounds.maxX + 240, 1200)}px`;
+  nodeLayer.style.height = `${Math.max(bounds.maxY + 240, 900)}px`;
+
+  nodes.forEach((entry) => {
+    nodeLayer.appendChild(createMindmapNode(entry));
+  });
+
+  surface.append(linksSvg, nodeLayer);
+  viewport.appendChild(surface);
+  networkCanvas.appendChild(viewport);
 
   const parentName = parentChain[parentChain.length - 1]?.name || "无";
   const childNames = children.length ? children.map((node) => node.name).join("、") : "无";
-  networkMeta.textContent = `上级节点：${parentName}；下级节点：${childNames}`;
+  const collapsedCount = state.mindmap.collapsedIds.size;
+  networkMeta.textContent = `上级节点：${parentName}；下级节点：${childNames}；当前显示 ${nodes.length} 个节点${collapsedCount ? `，已折叠 ${collapsedCount} 个分支` : ""}。`;
   networkMeta.classList.remove("empty");
+  updateMindmapToolbar(nodes.length);
 }
 
 function createGraphNode(node, type) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = `graph-node ${type}`;
+  button.setAttribute("aria-pressed", node.id === state.selectedId ? "true" : "false");
   button.innerHTML = `
-    <strong>${escapeHtml(node.name)}</strong>
+    <strong>${escapeHtml(formatNodeLabel(node))}</strong>
     <span>${node.children.length} 个下级</span>
   `;
   button.addEventListener("click", () => {
-    state.selectedId = node.id;
-    render();
+    selectNode(node.id);
   });
   return button;
+}
+
+function createMindmapNode(entry) {
+  const node = entry.node;
+  const element = document.createElement("button");
+  element.type = "button";
+  element.className = `mindmap-node ${node.id === state.selectedId ? "selected" : ""} ${node.linkedCopy ? "linked" : ""}`;
+  element.dataset.nodeId = node.id;
+  element.style.left = `${entry.x}px`;
+  element.style.top = `${entry.y}px`;
+  element.innerHTML = `
+    <span class="mindmap-node-title">${escapeHtml(formatNodeLabel(node))}</span>
+    <span class="mindmap-node-meta">${getVisibleChildren(node).length} 个下级${node.note ? " · 有正文" : ""}</span>
+    <span class="mindmap-node-actions">
+      <span class="mindmap-node-anchor">${node.children.length ? (state.mindmap.collapsedIds.has(node.id) ? "+" : "−") : "·"}</span>
+    </span>
+  `;
+  element.addEventListener("click", (event) => {
+    const action = event.target.closest(".mindmap-node-anchor");
+    if (action && node.children.length) {
+      event.stopPropagation();
+      toggleMindmapCollapse(node.id);
+      return;
+    }
+    selectNode(node.id);
+  });
+  return element;
+}
+
+function getDisplayDepthLimit() {
+  return state.displayDepth === "all" ? Number.POSITIVE_INFINITY : Number(state.displayDepth);
+}
+
+function normalizeDisplayDepth(value) {
+  return ["2", "3", "all"].includes(value) ? value : DEFAULT_OUTLINE_LEVEL;
+}
+
+function canShowChildren(node, depth) {
+  return node.children.length > 0 && depth < getDisplayDepthLimit();
+}
+
+function isOutlineExpanded(node, depth) {
+  if (!canShowChildren(node, depth) || state.collapsedIds.has(node.id)) {
+    return false;
+  }
+
+  return state.expandedIds.has(node.id) || depth < getDisplayDepthLimit();
+}
+
+function getToggleLabel(node, depth) {
+  if (!node.children.length) {
+    return "·";
+  }
+
+  if (!canShowChildren(node, depth)) {
+    return "+";
+  }
+
+  return isOutlineExpanded(node, depth) ? "−" : "+";
+}
+
+function toggleNodeExpansion(node, depth) {
+  if (!canShowChildren(node, depth)) {
+    return;
+  }
+
+  if (isOutlineExpanded(node, depth)) {
+    state.collapsedIds.add(node.id);
+    state.expandedIds.delete(node.id);
+    return;
+  }
+
+  state.expandedIds.add(node.id);
+  state.collapsedIds.delete(node.id);
+}
+
+function setSiblingExpansion(expanded) {
+  const info = findParentInfo(state.selectedId);
+  if (!info) {
+    return;
+  }
+
+  const depth = getNodeDepth(state.selectedId);
+  info.siblings.forEach((node) => {
+    if (!canShowChildren(node, depth)) {
+      return;
+    }
+
+    if (expanded) {
+      state.expandedIds.add(node.id);
+      state.collapsedIds.delete(node.id);
+    } else {
+      state.collapsedIds.add(node.id);
+      state.expandedIds.delete(node.id);
+    }
+  });
+  render();
+}
+
+function revealNodeInOutline(id, allowDepthChange) {
+  if (!id) {
+    return;
+  }
+
+  const depth = getNodeDepth(id);
+  const limit = getDisplayDepthLimit();
+  if (allowDepthChange && depth > limit) {
+    state.displayDepth = depth <= 3 ? "3" : "all";
+  }
+
+  getAncestors(id).forEach((node) => {
+    state.expandedIds.add(node.id);
+    state.collapsedIds.delete(node.id);
+  });
+}
+
+function protectLargeOutline() {
+  if (state.displayDepth !== "all" || countNodes(state.tree) <= MAX_OUTLINE_RENDERED_NODES) {
+    return;
+  }
+
+  collectExpandableIds(state.tree).forEach((id) => state.collapsedIds.add(id));
+  editorSubtitle.textContent = "目录节点较多，已先收起全部层级，可从左侧逐级展开。";
+}
+
+function collectExpandableIds(nodes, ids = []) {
+  nodes.forEach((node) => {
+    if (node.children.length) {
+      ids.push(node.id);
+      collectExpandableIds(node.children, ids);
+    }
+  });
+  return ids;
+}
+
+// Smoke note:
+// Outline clicks and graph clicks must both flow through this single selection path,
+// so the inspector, badges, and relation view always point at the same node.
+function selectNode(nodeId) {
+  if (!nodeId) {
+    return;
+  }
+  if (!findNode(nodeId)) {
+    return;
+  }
+  state.selectedId = nodeId;
+  revealNodeInOutline(nodeId, true);
+  render();
+}
+
+function getSelectedNode() {
+  ensureSelectedNode();
+  return findNode(state.selectedId);
+}
+
+function ensureSelectedNode() {
+  if (state.selectedId && findNode(state.selectedId)) {
+    return;
+  }
+  state.selectedId = state.tree[0]?.id || null;
+}
+
+function renderSelectedNodeDetails(selected) {
+  if (!selected) {
+    focusLabel.textContent = "未选择节点";
+    selectionPath.textContent = "暂无路径";
+    selectionSummary.textContent = "当前未选择节点。";
+    selectionSummary.classList.add("empty");
+    return;
+  }
+
+  const path = buildPath(selected.id).join(" / ");
+  const parent = getAncestors(selected.id).at(-1);
+  const childCount = selected.children.length;
+  focusLabel.textContent = selected.name;
+  selectionPath.textContent = path;
+  selectionSummary.textContent = `当前节点：${selected.name}；上级：${parent?.name || "无"}；下级：${childCount} 个。`;
+  selectionSummary.classList.remove("empty");
+}
+
+function hydrateMindmapState(raw) {
+  if (!raw || typeof raw !== "object") {
+    return;
+  }
+
+  state.mindmap.zoom = clampNumber(raw.zoom, MINDMAP_MIN_ZOOM, MINDMAP_MAX_ZOOM, MINDMAP_DEFAULT_ZOOM);
+  state.mindmap.panX = clampNumber(raw.panX, -4000, 4000, 120);
+  state.mindmap.panY = clampNumber(raw.panY, -4000, 4000, 120);
+  state.mindmap.manualPositions = normalizeMindmapPositions(raw.manualPositions);
+  state.mindmap.collapsedIds = new Set(Array.isArray(raw.collapsedIds) ? raw.collapsedIds : []);
+}
+
+function serializeMindmapState() {
+  return {
+    zoom: state.mindmap.zoom,
+    panX: state.mindmap.panX,
+    panY: state.mindmap.panY,
+    manualPositions: state.mindmap.manualPositions,
+    collapsedIds: Array.from(state.mindmap.collapsedIds),
+  };
+}
+
+function normalizeMindmapPositions(positions) {
+  const normalized = {};
+  if (!positions || typeof positions !== "object") {
+    return normalized;
+  }
+
+  Object.entries(positions).forEach(([id, value]) => {
+    if (!value || typeof value !== "object") {
+      return;
+    }
+    normalized[id] = {
+      x: Number.isFinite(value.x) ? value.x : 0,
+      y: Number.isFinite(value.y) ? value.y : 0,
+    };
+  });
+  return normalized;
+}
+
+function pruneMindmapState() {
+  const validIds = new Set(collectNodeIds(state.tree));
+  Object.keys(state.mindmap.manualPositions).forEach((id) => {
+    if (!validIds.has(id)) {
+      delete state.mindmap.manualPositions[id];
+    }
+  });
+  state.mindmap.collapsedIds.forEach((id) => {
+    if (!validIds.has(id)) {
+      state.mindmap.collapsedIds.delete(id);
+    }
+  });
+}
+
+function collectNodeIds(nodes, ids = []) {
+  nodes.forEach((node) => {
+    ids.push(node.id);
+    collectNodeIds(node.children, ids);
+  });
+  return ids;
+}
+
+function getVisibleChildren(node) {
+  if (state.mindmap.collapsedIds.has(node.id)) {
+    return [];
+  }
+  return node.children || [];
+}
+
+function toggleMindmapCollapse(nodeId) {
+  if (state.mindmap.collapsedIds.has(nodeId)) {
+    state.mindmap.collapsedIds.delete(nodeId);
+    setMindmapStatus("已展开节点分支。");
+  } else {
+    state.mindmap.collapsedIds.add(nodeId);
+    setMindmapStatus("已折叠节点分支。");
+  }
+  renderNetwork();
+  persistState();
+}
+
+function buildMindmapLayout() {
+  const nodes = [];
+  const links = [];
+  let cursorY = 0;
+
+  state.tree.forEach((root) => {
+    const blockHeight = measureMindmapSubtree(root);
+    layoutMindmapNode(root, 0, cursorY, blockHeight, nodes, links);
+    cursorY += blockHeight + MINDMAP_ROOT_GAP;
+  });
+
+  return { nodes, links };
+}
+
+function measureMindmapSubtree(node) {
+  const children = getVisibleChildren(node);
+  if (!children.length) {
+    return MINDMAP_NODE_HEIGHT;
+  }
+
+  const total = children.reduce((sum, child, index) => sum + measureMindmapSubtree(child) + (index ? MINDMAP_ROW_GAP : 0), 0);
+  return Math.max(MINDMAP_NODE_HEIGHT, total);
+}
+
+function layoutMindmapNode(node, depth, startY, subtreeHeight, nodes, links) {
+  const defaultY = startY + (subtreeHeight - MINDMAP_NODE_HEIGHT) / 2;
+  const defaultX = depth * MINDMAP_COLUMN_GAP;
+  const manual = state.mindmap.manualPositions[node.id];
+  const x = manual?.x ?? defaultX;
+  const y = manual?.y ?? defaultY;
+  nodes.push({ node, x, y, width: MINDMAP_NODE_WIDTH, height: MINDMAP_NODE_HEIGHT, selected: node.id === state.selectedId });
+
+  let childY = startY;
+  getVisibleChildren(node).forEach((child) => {
+    const childHeight = measureMindmapSubtree(child);
+    layoutMindmapNode(child, depth + 1, childY, childHeight, nodes, links);
+    const childManual = state.mindmap.manualPositions[child.id];
+    links.push({
+      from: { x: x + MINDMAP_NODE_WIDTH, y: y + MINDMAP_NODE_HEIGHT / 2 },
+      to: { x: (childManual?.x ?? (depth + 1) * MINDMAP_COLUMN_GAP), y: (childManual?.y ?? (childY + (childHeight - MINDMAP_NODE_HEIGHT) / 2)) + MINDMAP_NODE_HEIGHT / 2 },
+      selected: child.id === state.selectedId || node.id === state.selectedId,
+    });
+    childY += childHeight + MINDMAP_ROW_GAP;
+  });
+}
+
+function buildMindmapLinkPath(from, to) {
+  const midX = from.x + (to.x - from.x) / 2;
+  return `M ${from.x} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${to.x} ${to.y}`;
+}
+
+function getMindmapBounds(nodes) {
+  if (!nodes.length) {
+    return { minX: 0, minY: 0, maxX: 1200, maxY: 900, width: 1200, height: 900 };
+  }
+
+  const minX = Math.min(...nodes.map((item) => item.x));
+  const minY = Math.min(...nodes.map((item) => item.y));
+  const maxX = Math.max(...nodes.map((item) => item.x + item.width));
+  const maxY = Math.max(...nodes.map((item) => item.y + item.height));
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
+  };
+}
+
+function centerMindmapView() {
+  state.mindmap.panX = 120;
+  state.mindmap.panY = 120;
+}
+
+function changeMindmapZoom(delta) {
+  const next = clampNumber(Number((state.mindmap.zoom + delta).toFixed(2)), MINDMAP_MIN_ZOOM, MINDMAP_MAX_ZOOM, MINDMAP_DEFAULT_ZOOM);
+  state.mindmap.zoom = next;
+  updateMindmapToolbar();
+  renderNetwork();
+  persistState();
+}
+
+function handleMindmapWheel(event) {
+  if (!state.tree.length || networkCanvas.classList.contains("empty")) {
+    return;
+  }
+  event.preventDefault();
+  const delta = event.deltaY > 0 ? -0.08 : 0.08;
+  state.mindmap.zoom = clampNumber(Number((state.mindmap.zoom + delta).toFixed(2)), MINDMAP_MIN_ZOOM, MINDMAP_MAX_ZOOM, MINDMAP_DEFAULT_ZOOM);
+  setMindmapStatus(`缩放到 ${Math.round(state.mindmap.zoom * 100)}%。`);
+  renderNetwork();
+  persistState();
+}
+
+function handleMindmapPointerDown(event) {
+  if (!state.tree.length || networkCanvas.classList.contains("empty")) {
+    return;
+  }
+
+  if (event.target.closest(".mindmap-node-anchor")) {
+    return;
+  }
+
+  const nodeElement = event.target.closest(".mindmap-node");
+  if (nodeElement) {
+    state.interaction.mode = "drag-node";
+    state.interaction.pointerId = event.pointerId;
+    state.interaction.nodeId = nodeElement.dataset.nodeId;
+    state.interaction.startClientX = event.clientX;
+    state.interaction.startClientY = event.clientY;
+    const current = state.mindmap.manualPositions[state.interaction.nodeId] || findMindmapEntry(state.interaction.nodeId);
+    state.interaction.startNodeX = current?.x ?? 0;
+    state.interaction.startNodeY = current?.y ?? 0;
+    nodeElement.setPointerCapture?.(event.pointerId);
+    return;
+  }
+
+  state.interaction.mode = "pan";
+  state.interaction.pointerId = event.pointerId;
+  state.interaction.startClientX = event.clientX;
+  state.interaction.startClientY = event.clientY;
+  state.interaction.startPanX = state.mindmap.panX;
+  state.interaction.startPanY = state.mindmap.panY;
+}
+
+function handleMindmapPointerMove(event) {
+  if (state.interaction.pointerId !== event.pointerId) {
+    return;
+  }
+
+  if (state.interaction.mode === "pan") {
+    state.mindmap.panX = state.interaction.startPanX + (event.clientX - state.interaction.startClientX);
+    state.mindmap.panY = state.interaction.startPanY + (event.clientY - state.interaction.startClientY);
+    renderNetwork();
+    return;
+  }
+
+  if (state.interaction.mode === "drag-node" && state.interaction.nodeId) {
+    const deltaX = (event.clientX - state.interaction.startClientX) / state.mindmap.zoom;
+    const deltaY = (event.clientY - state.interaction.startClientY) / state.mindmap.zoom;
+    state.mindmap.manualPositions[state.interaction.nodeId] = {
+      x: state.interaction.startNodeX + deltaX,
+      y: state.interaction.startNodeY + deltaY,
+    };
+    renderNetwork();
+  }
+}
+
+function finishMindmapInteraction(event) {
+  if (event && state.interaction.pointerId && event.pointerId !== state.interaction.pointerId) {
+    return;
+  }
+
+  if (state.interaction.mode === "drag-node" && state.interaction.nodeId) {
+    setMindmapStatus("节点位置已更新。");
+  }
+
+  if (state.interaction.mode === "pan") {
+    setMindmapStatus("画布视角已更新。");
+  }
+
+  state.interaction.mode = null;
+  state.interaction.pointerId = null;
+  state.interaction.nodeId = null;
+  persistState();
+}
+
+function findMindmapEntry(nodeId) {
+  const layout = buildMindmapLayout();
+  return layout.nodes.find((entry) => entry.node.id === nodeId);
+}
+
+function updateMindmapToolbar(visibleCount = 0) {
+  mindmapViewBadge.textContent = `${Math.round(state.mindmap.zoom * 100)}%`;
+  if (!mindmapStatus.dataset.tone && visibleCount) {
+    setMindmapStatus(`当前画布显示 ${visibleCount} 个节点。`);
+  }
+}
+
+function setMindmapStatus(message, tone = "neutral") {
+  mindmapStatus.textContent = message;
+  mindmapStatus.dataset.tone = tone === "neutral" ? "" : tone;
+}
+
+function clampNumber(value, min, max, fallback) {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, value));
 }
 
 function normalizeTree(nodes) {
@@ -380,6 +1108,12 @@ function normalizeNode(node) {
     name,
     title: name,
     note: node.note || "",
+    sourceType: node.sourceType || node.source_type || "",
+    metadata: node.metadata || {},
+    sourceProjectId: node.sourceProjectId ?? node.source_project_id ?? null,
+    sourceProjectName: node.sourceProjectName || null,
+    sourceNodeId: node.sourceNodeId ?? node.source_node_id ?? null,
+    linkedCopy: Boolean(node.linkedCopy),
     position: Number.isInteger(node.position) ? node.position : 0,
     children: normalizeTree(node.children || []),
   };
@@ -424,6 +1158,10 @@ function getAncestors(id) {
 
 function buildPath(id) {
   return [...getAncestors(id).map((node) => node.name), findNode(id)?.name || ""].filter(Boolean);
+}
+
+function getNodeDepth(id) {
+  return buildPath(id).length || 1;
 }
 
 function insertSibling(id) {
@@ -474,15 +1212,41 @@ function getFallbackSelectedId(id) {
 }
 
 function persistState() {
-  sessionStorage.setItem(
-    STORAGE_KEY,
-    JSON.stringify({
-      projectId: state.projectId,
-      name: state.name,
-      tree: state.tree,
-      selectedId: state.selectedId,
-    }),
-  );
+  const payload = {
+    projectId: state.projectId,
+    name: state.name,
+    selectedId: state.selectedId,
+    displayDepth: state.displayDepth,
+    expandedIds: Array.from(state.expandedIds),
+    collapsedIds: Array.from(state.collapsedIds),
+    mindmap: serializeMindmapState(),
+  };
+
+  if (!state.apiMode) {
+    payload.tree = state.tree;
+  }
+
+  try {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch (error) {
+    if (state.apiMode) {
+      try {
+        sessionStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({
+            projectId: state.projectId,
+            name: state.name,
+            selectedId: state.selectedId,
+            displayDepth: state.displayDepth,
+          }),
+        );
+      } catch (_nestedError) {
+        return;
+      }
+      return;
+    }
+    throw error;
+  }
 }
 
 function getProjectId() {
@@ -510,7 +1274,12 @@ async function loadProject(preferredSelectedId = state.selectedId) {
   const project = data.project;
   state.name = project.name || "folder-system";
   state.tree = normalizeTree(project.tree || []);
-  state.selectedId = findNode(preferredSelectedId)?.id || state.tree[0]?.id || null;
+  pruneMindmapState();
+  state.selectedId = preferredSelectedId;
+  ensureSelectedNode();
+  protectLargeOutline();
+  revealNodeInOutline(state.selectedId, false);
+  await loadAvailableProjects();
   editorSubtitle.textContent = `正在编辑：${state.name}`;
   render();
 }
@@ -534,6 +1303,26 @@ async function runEditorAction(action, shouldRender = true) {
       toggleEditor(Boolean(state.tree.length));
       persistState();
     }
+  }
+}
+
+async function runExportAction(action) {
+  if (state.busy || state.exporting) {
+    return;
+  }
+
+  state.exporting = true;
+  const originalLabel = exportFile.textContent;
+  exportFile.textContent = "导出中...";
+  toggleEditor(Boolean(state.tree.length));
+  try {
+    await action();
+  } catch (error) {
+    setExportStatus(error.message || "导出失败，请稍后重试。", "error");
+  } finally {
+    state.exporting = false;
+    exportFile.textContent = originalLabel;
+    toggleEditor(Boolean(state.tree.length));
   }
 }
 
@@ -568,6 +1357,78 @@ async function findProjectIdByName(name) {
   }
 }
 
+async function loadAvailableProjects() {
+  if (!state.apiMode) {
+    state.availableProjects = [];
+    renderLinkSourceProjectOptions();
+    return;
+  }
+
+  try {
+    const data = await apiRequest("/api/projects");
+    state.availableProjects = (data.projects || []).filter((project) => project.id !== state.projectId);
+  } catch (error) {
+    state.availableProjects = [];
+  }
+  renderLinkSourceProjectOptions();
+}
+
+async function loadSourceProjectTree(projectId) {
+  const parsedId = Number(projectId);
+  if (!parsedId) {
+    state.sourceProjectTree = [];
+    renderLinkSourceRootOptions();
+    return;
+  }
+
+  const data = await apiRequest(`/api/projects/${parsedId}`);
+  state.sourceProjectTree = normalizeTree(data.project.tree || []);
+  renderLinkSourceRootOptions();
+}
+
+function renderLinkSourceProjectOptions() {
+  const currentValue = linkSourceProject.value;
+  linkSourceProject.innerHTML = '<option value="">请选择来源项目</option>';
+  state.availableProjects.forEach((project) => {
+    const option = document.createElement("option");
+    option.value = String(project.id);
+    option.textContent = project.name;
+    linkSourceProject.appendChild(option);
+  });
+  if (state.availableProjects.some((project) => String(project.id) === currentValue)) {
+    linkSourceProject.value = currentValue;
+  } else {
+    linkSourceProject.value = "";
+  }
+  if (!linkSourceProject.value) {
+    state.sourceProjectTree = [];
+  }
+  renderLinkSourceRootOptions();
+}
+
+function renderLinkSourceRootOptions() {
+  const currentValue = linkSourceRoot.value;
+  linkSourceRoot.innerHTML = '<option value="">整个来源项目</option>';
+  state.sourceProjectTree.forEach((node) => {
+    const option = document.createElement("option");
+    option.value = String(node.id);
+    option.textContent = node.name;
+    linkSourceRoot.appendChild(option);
+  });
+  if (state.sourceProjectTree.some((node) => String(node.id) === currentValue)) {
+    linkSourceRoot.value = currentValue;
+  } else {
+    linkSourceRoot.value = "";
+  }
+}
+
+function formatNodeLabel(node) {
+  if (node.linkedCopy && node.sourceProjectName) {
+    return `${node.name} [来自 ${node.sourceProjectName}]`;
+  }
+  return node.name;
+}
+
 function applyNodePatch(target, patch) {
   const node = normalizeNode({
     ...target,
@@ -577,12 +1438,100 @@ function applyNodePatch(target, patch) {
   target.name = node.name;
   target.title = node.title;
   target.note = node.note;
+  target.sourceType = node.sourceType;
+  target.metadata = node.metadata;
   target.parentId = node.parentId;
   target.position = node.position;
 }
 
 function countNodes(nodes) {
   return nodes.reduce((total, node) => total + 1 + countNodes(node.children), 0);
+}
+
+function updateExportPanel() {
+  exportFilename.textContent = buildExportFilename(exportFormat.value);
+  if (!state.tree.length) {
+    setExportStatus("加载项目后即可导出当前知识网络。");
+    return;
+  }
+  if (!state.apiMode && exportFormat.value !== "docx") {
+    setExportStatus("当前是离线编辑状态，其他格式需要通过本地服务导出。");
+    return;
+  }
+  if (!state.exporting && !exportStatus.dataset.tone) {
+    const label = EXPORT_FORMATS[exportFormat.value]?.label || "文件";
+    setExportStatus(`将导出当前知识网络为 ${label} 文件。`);
+  }
+}
+
+function buildExportFilename(formatKey) {
+  const format = EXPORT_FORMATS[formatKey] || EXPORT_FORMATS.docx;
+  return `${sanitizeName(state.name || "knowledge-network")}.${format.extension}`;
+}
+
+function setExportStatus(message, tone = "neutral") {
+  exportStatus.textContent = message;
+  exportStatus.dataset.tone = tone === "neutral" ? "" : tone;
+}
+
+async function requestExport(formatKey) {
+  const url = `/api/projects/${state.projectId}/export?format=${encodeURIComponent(formatKey)}`;
+  const response = await fetch(url);
+  const contentType = response.headers.get("Content-Type") || "";
+  if (!response.ok) {
+    const data = contentType.includes("application/json") ? await response.json() : {};
+    const message = data.error?.message || data.error || "导出失败。";
+    throw new Error(message);
+  }
+
+  const blob = await response.blob();
+  return {
+    blob,
+    filename: parseDownloadFilename(response.headers.get("Content-Disposition")) || buildExportFilename(formatKey),
+    contentType: response.headers.get("Content-Type") || "",
+  };
+}
+
+function validateExportResponse(formatKey, result) {
+  if (formatKey === "docx") {
+    return;
+  }
+
+  const requested = EXPORT_FORMATS[formatKey];
+  const returnedExt = getFilenameExtension(result.filename);
+  const returnedType = result.contentType.toLowerCase();
+  if (returnedExt === requested.extension) {
+    return;
+  }
+  if (returnedType.startsWith(requested.mime)) {
+    return;
+  }
+  if (returnedExt === "docx" || returnedType.includes("wordprocessingml")) {
+    throw new Error(`当前服务返回的仍是 Word 文件，说明 ${requested.label} 导出接口还未接入。`);
+  }
+}
+
+function parseDownloadFilename(contentDisposition) {
+  if (!contentDisposition) {
+    return "";
+  }
+
+  const encodedMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (encodedMatch) {
+    try {
+      return decodeURIComponent(encodedMatch[1]);
+    } catch (error) {
+      return encodedMatch[1];
+    }
+  }
+
+  const plainMatch = contentDisposition.match(/filename="([^"]+)"/i);
+  return plainMatch ? plainMatch[1] : "";
+}
+
+function getFilenameExtension(filename) {
+  const match = String(filename || "").toLowerCase().match(/\.([^.]+)$/);
+  return match ? match[1] : "";
 }
 
 function createId() {
@@ -599,6 +1548,25 @@ function sanitizeName(name) {
     .trim()
     .replace(/\.+$/g, "");
   return cleaned || "untitled";
+}
+
+function normalizeNoteInput(note) {
+  return String(note).replace(/\r\n?/g, "\n");
+}
+
+function updateNoteStatus(node) {
+  if (!noteStatus) {
+    return;
+  }
+
+  if (!node) {
+    noteStatus.textContent = "未选择节点";
+    return;
+  }
+
+  const note = node.note || "";
+  const lines = note ? note.split("\n").length : 0;
+  noteStatus.textContent = note ? `${note.length} 字，${lines} 行正文` : "当前节点还没有正文";
 }
 
 function escapeHtml(value) {
@@ -620,9 +1588,8 @@ function flattenToWordParagraphs(nodes, depth = 1, paragraphs = []) {
 
     if (node.note) {
       node.note
-        .split(/\n+/)
-        .map((line) => line.trim())
-        .filter(Boolean)
+        .split(/\r?\n/)
+        .filter((line) => line.trim())
         .forEach((line) => {
           paragraphs.push({
             type: "text",
