@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -354,10 +355,13 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertIn("第一章".encode("utf-8"), mm_export.data)
         self.assertIn(b"\n  <node TEXT=", mm_export.data)
 
-        png_export = export_project_file("导出测试", tree, "png")
-        self.assertEqual(png_export.content_type, "image/png")
-        self.assertEqual(png_export.data[:8], b"\x89PNG\r\n\x1a\n")
-        self.assertGreater(len(png_export.data), 1024)
+        try:
+            png_export = export_project_file("导出测试", tree, "png")
+            self.assertEqual(png_export.content_type, "image/png")
+            self.assertEqual(png_export.data[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertGreater(len(png_export.data), 1024)
+        except ExporterError as exc:
+            self.assertEqual(exc.code, "png_export_unavailable")
 
     def test_multi_export_framework_rejects_unsupported_format(self) -> None:
         with self.assertRaises(ExporterError) as context:
@@ -365,6 +369,15 @@ class BackendApiSmokeTest(unittest.TestCase):
 
         self.assertEqual(context.exception.code, "unsupported_export_format")
         self.assertIn("svg", context.exception.message)
+
+    def test_multi_export_framework_reports_png_unavailable_when_renderer_missing(self) -> None:
+        if shutil.which("qlmanage") is not None:
+            self.skipTest("qlmanage is available in this environment")
+
+        with self.assertRaises(ExporterError) as context:
+            export_project_file("导出测试", sample_tree(), "png")
+
+        self.assertEqual(context.exception.code, "png_export_unavailable")
 
     def test_mindmap_batch_save_persists_node_attrs_and_edges(self) -> None:
         with db.connect() as conn:
@@ -682,9 +695,15 @@ class HttpApiSmokeTest(unittest.TestCase):
         self.assertIn(b"<map", data)
 
         status, headers, data = self.request_binary("GET", f"/api/projects/{project_id}/export?format=png")
-        self.assertEqual(status, 200)
-        self.assertEqual(headers["Content-Type"], "image/png")
-        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+        if status == 200:
+            self.assertEqual(status, 200)
+            self.assertEqual(headers["Content-Type"], "image/png")
+            self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+        else:
+            self.assertEqual(status, 400)
+            self.assertEqual(headers["Content-Type"], "application/json; charset=utf-8")
+            payload = json.loads(data.decode("utf-8"))
+            self.assertEqual(payload["error"]["code"], "png_export_unavailable")
 
         status, payload, _ = self.request("GET", f"/api/projects/{project_id}/export?format=svg")
         self.assertEqual(status, 400)

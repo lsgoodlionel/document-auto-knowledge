@@ -6,6 +6,7 @@ import tempfile
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
 from typing import Any, Callable
 from unicodedata import east_asian_width
 from xml.sax.saxutils import escape
@@ -66,6 +67,10 @@ class ExportRegistry:
 
 def export_project_file(project_name: str, tree: list[dict[str, Any]], format_name: str = "docx") -> ExportResult:
     return registry.export(project_name, tree, format_name)
+
+
+def png_export_available() -> bool:
+    return shutil.which("qlmanage") is not None
 
 
 def build_pdf(project_name: str, tree: list[dict[str, Any]]) -> bytes:
@@ -183,6 +188,8 @@ def mm_node(node: dict[str, Any], depth: int) -> str:
 
 
 def build_png(project_name: str, tree: list[dict[str, Any]]) -> bytes:
+    if not png_export_available():
+        raise ExporterError("png_export_unavailable", "PNG export is not available on this platform.")
     html = build_outline_html(project_name, tree)
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
