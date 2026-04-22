@@ -58,7 +58,6 @@ CREATE TABLE IF NOT EXISTS nodes (
 
 CREATE INDEX IF NOT EXISTS idx_nodes_project_parent
 ON nodes(project_id, parent_id, position);
-
 CREATE INDEX IF NOT EXISTS idx_sessions_user
 ON sessions(user_id, expires_at);
 """

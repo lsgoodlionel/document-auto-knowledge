@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from .config import FRONTEND_DIR, HOST, MAX_UPLOAD_SIZE, PORT
 from .db import init_db
-from .services import auth, projects
+from .services import auth, mindmap, projects
 from .services.exporters import ExporterError, export_project_file
 from .services.importers import ImporterError
 
@@ -91,6 +91,9 @@ class ApiServer(BaseHTTPRequestHandler):
         if path == "/api/projects":
             json_response(self, HTTPStatus.OK, {"projects": projects.list_projects()})
             return
+        if path.startswith("/api/projects/") and path.endswith("/mindmap"):
+            self._handle_get_mindmap(path)
+            return
         if path.startswith("/api/projects/") and path.endswith("/export"):
             self._handle_export(path, parsed_url.query)
             return
@@ -130,6 +133,9 @@ class ApiServer(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:
         path = urlparse(self.path).path
         if path.startswith("/api/projects/"):
+            if path.endswith("/mindmap"):
+                self._handle_save_mindmap(path)
+                return
             self._handle_rename_project(path)
             return
         if path.startswith("/api/nodes/") and path.endswith("/move"):
@@ -210,6 +216,15 @@ class ApiServer(BaseHTTPRequestHandler):
             return
         json_response(self, HTTPStatus.OK, {"project": project})
 
+    def _handle_get_mindmap(self, path: str) -> None:
+        try:
+            project_id = parse_id(path.split("/")[3], "project id")
+            payload = mindmap.get_project_mindmap(project_id)
+        except Exception as exc:
+            handle_api_error(self, exc)
+            return
+        json_response(self, HTTPStatus.OK, payload)
+
     def _handle_rename_project(self, path: str) -> None:
         try:
             project_id = parse_id(path.rstrip("/").split("/")[-1], "project id")
@@ -219,6 +234,16 @@ class ApiServer(BaseHTTPRequestHandler):
             handle_api_error(self, exc)
             return
         json_response(self, HTTPStatus.OK, {"project": project})
+
+    def _handle_save_mindmap(self, path: str) -> None:
+        try:
+            project_id = parse_id(path.split("/")[3], "project id")
+            payload = self._read_json()
+            result = mindmap.save_project_mindmap(project_id, payload)
+        except Exception as exc:
+            handle_api_error(self, exc)
+            return
+        json_response(self, HTTPStatus.OK, result)
 
     def _handle_delete_project(self, path: str) -> None:
         try:

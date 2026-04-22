@@ -54,7 +54,10 @@ def login(username: str, password: str) -> tuple[dict[str, Any], str]:
 
         token = secrets.token_urlsafe(32)
         expires_at = (datetime.now(timezone.utc) + timedelta(seconds=SESSION_MAX_AGE)).isoformat()
-        conn.execute("INSERT INTO sessions(user_id, token, expires_at) VALUES (?, ?, ?)", (user["id"], token, expires_at))
+        conn.execute(
+            "INSERT INTO sessions(user_id, token, expires_at) VALUES (?, ?, ?)",
+            (user["id"], token, expires_at),
+        )
         conn.commit()
         return serialize_user(user), build_session_cookie(token)
 
