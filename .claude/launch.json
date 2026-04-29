@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ai-tools-guide",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["serve-preview.js"],
+      "port": 8899,
+      "autoPort": true
+    }
+  ]
+}
